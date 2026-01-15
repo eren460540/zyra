@@ -62,6 +62,24 @@ RNG_COOLDOWN = 30
 
 timezone_berlin = ZoneInfo("Europe/Berlin")
 
+
+def safe_button_emoji(custom_emoji: str | None, fallback_unicode: str):
+    """
+    Returns a discord.PartialEmoji if the custom emoji is STATIC.
+    Returns fallback Unicode emoji if animated, invalid, or missing.
+    """
+    if custom_emoji is None:
+        return fallback_unicode
+    if custom_emoji.startswith("<a:"):
+        return fallback_unicode
+    if custom_emoji.startswith("<:"):
+        match = re.match(r"^<:([^:]+):(\d+)>$", custom_emoji)
+        if not match:
+            return fallback_unicode
+        name, emoji_id = match.groups()
+        return discord.PartialEmoji(name=name, id=int(emoji_id))
+    return fallback_unicode
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -482,8 +500,9 @@ class BankView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label=f"{EMOJI['sparkle_eyes']} View My Entries",
+        label="View My Entries",
         style=discord.ButtonStyle.primary,
+        emoji=safe_button_emoji(EMOJI["sparkle_eyes"], "✨"),
         custom_id="bank_view_entries",
     )
     async def view_entries(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -502,8 +521,9 @@ class BankView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(
-        label=f"{EMOJI['sips_tea']} Interest Info",
+        label="Interest Info",
         style=discord.ButtonStyle.secondary,
+        emoji=safe_button_emoji(EMOJI["sips_tea"], "🍵"),
         custom_id="bank_interest_info",
     )
     async def interest_info(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -605,8 +625,9 @@ class GiveawayView(discord.ui.View):
         super().__init__(timeout=None)
         self.giveaway_id = giveaway_id
         button = discord.ui.Button(
-            label=f"{EMOJI['finger_point']} Enter Giveaway",
+            label="Enter Giveaway",
             style=discord.ButtonStyle.success,
+            emoji=safe_button_emoji(EMOJI["finger_point"], "👉"),
             custom_id=f"giveaway_enter_{giveaway_id}",
         )
         button.callback = self.enter_giveaway
@@ -621,8 +642,9 @@ class InvitesPanelView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label=f"{EMOJI['tongue_lick']} Code",
+        label="Code",
         style=discord.ButtonStyle.primary,
+        emoji=safe_button_emoji(EMOJI["tongue_lick"], "🏷️"),
         custom_id="invites_code",
     )
     async def invite_code(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -677,8 +699,9 @@ class InvitesPanelView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(
-        label=f"{EMOJI['stare']} Stats",
+        label="Stats",
         style=discord.ButtonStyle.secondary,
+        emoji=safe_button_emoji(EMOJI["stare"], "📊"),
         custom_id="invites_stats",
     )
     async def invite_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -708,8 +731,9 @@ class InvitesPanelView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(
-        label=f"{EMOJI['drool']} Buy",
+        label="Buy",
         style=discord.ButtonStyle.success,
+        emoji=safe_button_emoji(EMOJI["drool"], "🛒"),
         custom_id="invites_buy",
     )
     async def invite_buy(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -737,15 +761,27 @@ class InviteBuyView(discord.ui.View):
         super().__init__(timeout=60)
         self.user_id = user_id
 
-    @discord.ui.button(label="3 Invites → 10", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="3 Invites → 10",
+        style=discord.ButtonStyle.primary,
+        emoji=safe_button_emoji(None, "3️⃣"),
+    )
     async def buy_3(self, interaction: discord.Interaction, button: discord.ui.Button):
         await handle_invite_purchase(interaction, self.user_id, 3, 10)
 
-    @discord.ui.button(label="5 Invites → 25", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="5 Invites → 25",
+        style=discord.ButtonStyle.primary,
+        emoji=safe_button_emoji(None, "5️⃣"),
+    )
     async def buy_5(self, interaction: discord.Interaction, button: discord.ui.Button):
         await handle_invite_purchase(interaction, self.user_id, 5, 25)
 
-    @discord.ui.button(label="10 Invites → 75", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="10 Invites → 75",
+        style=discord.ButtonStyle.primary,
+        emoji=safe_button_emoji(None, "🔟"),
+    )
     async def buy_10(self, interaction: discord.Interaction, button: discord.ui.Button):
         await handle_invite_purchase(interaction, self.user_id, 10, 75)
 
@@ -755,8 +791,9 @@ class SupportPanelView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label=f"{EMOJI['heart']} Support",
+        label="Support",
         style=discord.ButtonStyle.primary,
+        emoji=safe_button_emoji(EMOJI["heart"], "🆘"),
         custom_id="support_create",
     )
     async def support_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -802,6 +839,7 @@ class SupportPanelView(discord.ui.View):
     @discord.ui.button(
         label="Trade",
         style=discord.ButtonStyle.secondary,
+        emoji=safe_button_emoji(None, "💱"),
         custom_id="support_trade",
     )
     async def trade(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -813,6 +851,7 @@ class SupportPanelView(discord.ui.View):
     @discord.ui.button(
         label="Report",
         style=discord.ButtonStyle.danger,
+        emoji=safe_button_emoji(None, "🚨"),
         custom_id="support_report",
     )
     async def report(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -856,8 +895,9 @@ class TicketCloseView(discord.ui.View):
         super().__init__(timeout=None)
         self.channel_id = channel_id
         button = discord.ui.Button(
-            label=f"{EMOJI['bonk']} Close Ticket",
+            label="Close Ticket",
             style=discord.ButtonStyle.danger,
+            emoji=safe_button_emoji(EMOJI["bonk"], "🔒"),
             custom_id=f"ticket_close_{channel_id}",
         )
         button.callback = self.close_ticket
