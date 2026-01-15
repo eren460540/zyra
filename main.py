@@ -258,7 +258,7 @@ async def run_migrations():
                 code TEXT PRIMARY KEY,
                 creator_id BIGINT NOT NULL,
                 invite_url TEXT NOT NULL,
-                invite_id BIGINT NOT NULL,
+                invite_id TEXT NOT NULL,
                 created_at BIGINT NOT NULL,
                 expires_at BIGINT NOT NULL,
                 uses_total INT NOT NULL DEFAULT 0,
@@ -271,7 +271,7 @@ async def run_migrations():
             """
             CREATE TABLE IF NOT EXISTS invite_joins (
                 invited_id BIGINT PRIMARY KEY,
-                invite_id BIGINT NOT NULL,
+                invite_id TEXT NOT NULL,
                 code TEXT REFERENCES invite_codes(code),
                 inviter_id BIGINT NOT NULL,
                 joined_at BIGINT NOT NULL,
@@ -492,7 +492,7 @@ async def update_invites_cache(guild: discord.Guild):
     except (discord.Forbidden, discord.HTTPException):
         return
     for invite in invites:
-        invite_cache[invite.id] = invite.uses or 0
+        invite_cache[invite.code] = invite.uses or 0
 
 
 class BankView(discord.ui.View):
@@ -681,7 +681,7 @@ class InvitesPanelView(discord.ui.View):
             code,
             interaction.user.id,
             invite.url,
-            invite.id,
+            invite.code,
             now_ts(),
             expires_at,
         )
@@ -860,7 +860,7 @@ class SupportPanelView(discord.ui.View):
 
 class ReportModal(discord.ui.Modal):
     def __init__(self):
-        super().__init__(title=f"{EMOJI['no_bully']} Report")
+        super().__init__(title="Report a User")
         self.reported_user = discord.ui.TextInput(
             label="Reported User ID",
             placeholder="1234567890",
@@ -1341,12 +1341,12 @@ async def on_ready():
 
 @bot.event
 async def on_invite_create(invite: discord.Invite):
-    invite_cache[invite.id] = invite.uses or 0
+    invite_cache[invite.code] = invite.uses or 0
 
 
 @bot.event
 async def on_invite_delete(invite: discord.Invite):
-    invite_cache.pop(invite.id, None)
+    invite_cache.pop(invite.code, None)
 
 
 @bot.event
@@ -1358,14 +1358,14 @@ async def on_member_join(member: discord.Member):
         return
     used_invite = None
     for invite in invites:
-        previous_uses = invite_cache.get(invite.id, 0)
+        previous_uses = invite_cache.get(invite.code, 0)
         if invite.uses and invite.uses > previous_uses:
             used_invite = invite
             break
     await update_invites_cache(guild)
     if not used_invite:
         return
-    code_row = await db_pool.fetchrow("SELECT * FROM invite_codes WHERE invite_id=$1", used_invite.id)
+    code_row = await db_pool.fetchrow("SELECT * FROM invite_codes WHERE invite_id=$1", used_invite.code)
     valid = True
     invalid_reason = None
     if not code_row:
@@ -1385,7 +1385,7 @@ async def on_member_join(member: discord.Member):
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         """,
         member.id,
-        used_invite.id,
+        used_invite.code,
         code_row["code"] if code_row else None,
         used_invite.inviter.id if used_invite.inviter else 0,
         now_ts(),
