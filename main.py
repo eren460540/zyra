@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import os
+import json
 import random
 import re
 import secrets
@@ -380,36 +381,88 @@ async def apply_interest(user_id: int, conn: Optional[asyncpg.Connection] = None
     return {"user_id": user_id, "entries": entries, "last_interest_ts": last_ts}
 
 
-async def log_event(action: str, user_id: Optional[int], details: str, extra_context: Optional[Dict[str, str]] = None):
-    detail_text = details[:500]
-    await db_pool.execute(
-        "INSERT INTO logs (user_id, action, details, created_at) VALUES ($1, $2, $3, $4)",
-        user_id,
-        action,
-        detail_text,
-        now_ts(),
-    )
+async def log_event(action: str, user_id: Optional[int], details: str):
+    created_ts = now_ts()
+    detail_text = (details or "")[:500]
+    try:
+        await db_pool.execute(
+            "INSERT INTO logs (user_id, action, details, created_at) VALUES ($1, $2, $3, $4)",
+            user_id,
+            action,
+            detail_text,
+            created_ts,
+        )
+    except Exception:
+        pass
+
     channel = bot.get_channel(STAFF_LOG_CHANNEL_ID)
     if not channel:
         return
-    title = f"{EMOJI['police']} {EMOJI['clown']} {EMOJI['pout']} Staff Log"
-    if action.startswith("severe_spam"):
-        title = f"{EMOJI['police']} {EMOJI['clown']} {EMOJI['pout']} {EMOJI['panic']} Severe Spam"
-    if action.startswith("admin_bypass"):
+
+    parsed_details = {}
+    if detail_text:
+        try:
+            parsed_details = json.loads(detail_text)
+        except json.JSONDecodeError:
+            parsed_details = {}
+
+    user_label = f"<@{user_id}>" if user_id else "Unknown"
+    embed = None
+
+    if action == "automod_punishment":
+        title = f"{EMOJI['police']} {EMOJI['no_bully']} Automod Punishment"
+        embed = discord.Embed(title=title, color=discord.Color.dark_red())
+        embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
+        embed.add_field(name="Reason", value=parsed_details.get("reason", "Unknown"), inline=True)
+        embed.add_field(name="Channel", value=str(parsed_details.get("channel_id", "Unknown")), inline=True)
+        embed.add_field(name="Message Content", value=parsed_details.get("content", "Unknown"), inline=False)
+        cooldown_ts = parsed_details.get("no_entry_until", created_ts)
+        embed.add_field(name="No-Entry Cooldown Ends", value=f"<t:{cooldown_ts}:R>", inline=False)
+    elif action == "entries_gain":
+        title = f"{EMOJI['sparkle_eyes']} {EMOJI['heart']} Entries Gained"
+        embed = discord.Embed(title=title, color=discord.Color.teal())
+        embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
+        embed.add_field(name="Source", value=str(parsed_details.get("source", "Unknown")), inline=True)
+        embed.add_field(name="Amount Gained", value=str(parsed_details.get("amount", "0")), inline=True)
+        embed.add_field(name="Balance After", value=str(parsed_details.get("new_balance", "Unknown")), inline=True)
+        embed.add_field(name="Time", value=f"<t:{created_ts}:R>", inline=False)
+    elif action == "invite_entries_granted":
+        title = f"{EMOJI['finger_point']} {EMOJI['nomnom']} Invite Entries Granted"
+        embed = discord.Embed(title=title, color=discord.Color.green())
+        embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
+        embed.add_field(name="Tier", value=str(parsed_details.get("tier", "Unknown")), inline=True)
+        embed.add_field(name="Entries Granted", value=str(parsed_details.get("entries_granted", "0")), inline=True)
+        embed.add_field(
+            name="Remaining Stock",
+            value=str(parsed_details.get("remaining_stock", "Unknown")),
+            inline=True,
+        )
+        embed.add_field(
+            name="Valid Invites",
+            value=str(parsed_details.get("valid_invites", "Unknown")),
+            inline=True,
+        )
+        embed.add_field(name="Time", value=f"<t:{created_ts}:R>", inline=False)
+    elif action == "admin_bypass":
         title = f"{EMOJI['sleeping']} Admin Bypass Notice"
-    fields = [
-        ("User", f"<@{user_id}>" if user_id else "Unknown", True),
-        ("Action", action, True),
-        ("Details", detail_text or "None", False),
-        ("Time", f"<t:{now_ts()}:R>", True),
-    ]
-    if extra_context:
-        for key, value in extra_context.items():
-            fields.append((key, value, False))
-    embed = build_embed("logs", title, "Automod/Staff event recorded.", fields)
+        embed = discord.Embed(title=title, color=discord.Color.dark_grey())
+        embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
+        embed.add_field(name="Reason", value=parsed_details.get("reason", "Unknown"), inline=True)
+        embed.add_field(name="Channel", value=str(parsed_details.get("channel_id", "Unknown")), inline=True)
+        embed.add_field(name="Message Content", value=parsed_details.get("content", "Unknown"), inline=False)
+        embed.add_field(name="Time", value=f"<t:{created_ts}:R>", inline=False)
+    else:
+        title = "Staff Log"
+        embed = discord.Embed(title=title, color=discord.Color.dark_grey())
+        embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
+        embed.add_field(name="Action", value=action, inline=True)
+        embed.add_field(name="Details", value=detail_text or "None", inline=False)
+        embed.add_field(name="Time", value=f"<t:{created_ts}:R>", inline=False)
+
+    embed.set_footer(text=f"Timestamp: <t:{created_ts}:F>")
     try:
-        await channel.send(embed=embed)
-    except (discord.Forbidden, discord.NotFound):
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
         return
 
 
@@ -991,12 +1044,18 @@ async def handle_invite_purchase(interaction: discord.Interaction, user_id: int,
                 )
                 return
             await apply_interest(user_id, conn)
+            row = await conn.fetchrow(
+                "SELECT entries FROM users WHERE user_id=$1 FOR UPDATE",
+                user_id,
+            )
+            old_balance = int(row["entries"])
+            new_balance = old_balance + reward
             await conn.execute(
                 "UPDATE invite_event_state SET {0}={0}-1 WHERE key='global'".format(stock_key)
             )
             await conn.execute(
-                "UPDATE users SET entries=entries+$1 WHERE user_id=$2",
-                reward,
+                "UPDATE users SET entries=$1 WHERE user_id=$2",
+                new_balance,
                 user_id,
             )
     embed = build_embed(
@@ -1006,7 +1065,32 @@ async def handle_invite_purchase(interaction: discord.Interaction, user_id: int,
         [("New Balance", "Updated", True)],
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
-    await log_event("invite_purchase", user_id, f"Bought {reward} entries for {needed_invites} invites")
+    await log_event(
+        "entries_gain",
+        user_id,
+        json.dumps(
+            {
+                "source": "invite_reward",
+                "amount": reward,
+                "old_balance": old_balance,
+                "new_balance": new_balance,
+                "channel_id": interaction.channel_id,
+                "tier": needed_invites,
+            }
+        ),
+    )
+    await log_event(
+        "invite_entries_granted",
+        user_id,
+        json.dumps(
+            {
+                "tier": needed_invites,
+                "entries_granted": reward,
+                "remaining_stock": max(0, stock_value - 1),
+                "valid_invites": valid_invites,
+            }
+        ),
+    )
 
 
 async def create_bank_panel(channel: discord.TextChannel):
@@ -1226,9 +1310,15 @@ async def process_rng(message: discord.Message):
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await apply_interest(user_id, conn)
+            row = await conn.fetchrow(
+                "SELECT entries FROM users WHERE user_id=$1 FOR UPDATE",
+                user_id,
+            )
+            old_balance = int(row["entries"])
+            new_balance = old_balance + award
             await conn.execute(
-                "UPDATE users SET entries=entries+$1 WHERE user_id=$2",
-                award,
+                "UPDATE users SET entries=$1 WHERE user_id=$2",
+                new_balance,
                 user_id,
             )
             await conn.execute(
@@ -1236,6 +1326,19 @@ async def process_rng(message: discord.Message):
                 now_ts() + RNG_COOLDOWN,
                 user_id,
             )
+    await log_event(
+        "entries_gain",
+        user_id,
+        json.dumps(
+            {
+                "source": "chat_rng",
+                "amount": award,
+                "old_balance": old_balance,
+                "new_balance": new_balance,
+                "channel_id": message.channel.id,
+            }
+        ),
+    )
     if public:
         description = f"{message.author.mention} gained **+{award}** entries!"
         embed = build_embed(
@@ -1259,7 +1362,14 @@ async def apply_automod(message: discord.Message) -> bool:
             await log_event(
                 "admin_bypass",
                 message.author.id,
-                f"Content flagged but bypassed due to permissions. {EMOJI['sleeping']}",
+                json.dumps(
+                    {
+                        "reason": "flagged_content_bypassed",
+                        "channel_id": message.channel.id,
+                        "message_id": message.id,
+                        "content": message.content[:300],
+                    }
+                ),
             )
         return True
     user_id = message.author.id
@@ -1276,10 +1386,8 @@ async def apply_automod(message: discord.Message) -> bool:
     else:
         streak_count = 1
     punish_reason = None
-    severe = False
     if streak_count >= 3:
         punish_reason = "severe_spam_streak"
-        severe = True
     if state["last_msg_hash"] == msg_hash and current - state["last_msg_ts"] <= 120:
         punish_reason = punish_reason or "repeat_message"
     if LINK_REGEX.search(normalized):
@@ -1299,21 +1407,39 @@ async def apply_automod(message: discord.Message) -> bool:
         user_id,
     )
     if punish_reason:
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound):
+            pass
         await db_pool.execute(
             "UPDATE automod_state SET no_entry_until=$1 WHERE user_id=$2",
             current + 120,
             user_id,
         )
         try:
-            await message.delete()
-        except (discord.Forbidden, discord.NotFound):
-            pass
-        try:
             await message.author.send("Please avoid spam or prohibited content. Further issues may result in action.")
         except (discord.Forbidden, discord.HTTPException):
             pass
-        action = "severe_spam" if severe else "automod_punishment"
-        await log_event(action, user_id, f"Punished for: {punish_reason}")
+        reason_map = {
+            "severe_spam_streak": "spam",
+            "repeat_message": "duplicate",
+            "link_detected": "link",
+            "blacklist_detected": "language",
+        }
+        await log_event(
+            "automod_punishment",
+            user_id,
+            json.dumps(
+                {
+                    "reason": reason_map.get(punish_reason, punish_reason),
+                    "channel_id": message.channel.id,
+                    "message_id": message.id,
+                    "content": message.content[:300],
+                    "duration_seconds": 120,
+                    "no_entry_until": current + 120,
+                }
+            ),
+        )
         return False
     return True
 
