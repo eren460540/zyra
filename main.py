@@ -860,7 +860,7 @@ class SupportPanelView(discord.ui.View):
 
 class ReportModal(discord.ui.Modal):
     def __init__(self):
-        super().__init__(title=f"{EMOJI['no_bully']} Submit a Report")
+        super().__init__(title=f"{EMOJI['no_bully']} Report")
         self.reported_user = discord.ui.TextInput(
             label="Reported User ID",
             placeholder="1234567890",
