@@ -179,6 +179,24 @@ def build_embed(kind: str, title: str, description: str, fields: List[Tuple[str,
 
 async def run_migrations():
     async with db_pool.acquire() as conn:
+        invite_tables = {
+            "invite_codes": "invite_id",
+            "invite_joins": "invite_id",
+        }
+        for table, column in invite_tables.items():
+            data_type = await conn.fetchval(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name=$1 AND column_name=$2
+                """,
+                table,
+                column,
+            )
+            if data_type and data_type != "text":
+                await conn.execute(
+                    f"ALTER TABLE {table} ALTER COLUMN {column} TYPE TEXT USING {column}::text"
+                )
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -544,10 +562,10 @@ class BankView(discord.ui.View):
 
 class GiveawayEntryModal(discord.ui.Modal):
     def __init__(self, giveaway_id: int):
-        super().__init__(title=f"{EMOJI['tongue_lick']} Tempted? Spend Entries {EMOJI['nomnom']}")
+        super().__init__(title=f"{EMOJI['tongue_lick']} Spend entries")
         self.giveaway_id = giveaway_id
         self.entries_amount = discord.ui.TextInput(
-            label=f"Entries to spend {EMOJI['nomnom']}",
+            label="Entries to spend",
             style=discord.TextStyle.short,
             placeholder="Enter a whole number",
             required=True,
