@@ -1614,17 +1614,14 @@ async def host(ctx: commands.Context, *args: str):
         ],
     )
     embed.set_footer(text=f"Hosted by {ctx.author.display_name}")
-    channel = bot.get_channel(GENERAL_CHAT_CHANNEL_ID)
-    if not channel:
-        await ctx.send("General chat channel not found.")
-        return
+    channel = ctx.channel
     row = await db_pool.fetchrow(
         """
         INSERT INTO giveaways (channel_id, prize, winner_count, is_big, ends_at, created_by, created_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         """,
-        GENERAL_CHAT_CHANNEL_ID,
+        channel.id,
         prize,
         winner_amount,
         False,
@@ -1672,17 +1669,14 @@ async def bighost(ctx: commands.Context, *args: str):
         ],
     )
     embed.set_footer(text=f"Hosted by {ctx.author.display_name}")
-    channel = bot.get_channel(GENERAL_CHAT_CHANNEL_ID)
-    if not channel:
-        await ctx.send("General chat channel not found.")
-        return
+    channel = ctx.channel
     row = await db_pool.fetchrow(
         """
         INSERT INTO giveaways (channel_id, prize, winner_count, is_big, ends_at, created_by, created_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         """,
-        GENERAL_CHAT_CHANNEL_ID,
+        channel.id,
         prize,
         winner_amount,
         True,
