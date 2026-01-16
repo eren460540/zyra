@@ -80,6 +80,21 @@ def safe_button_emoji(custom_emoji: str | None, fallback_unicode: str):
         return discord.PartialEmoji(name=name, id=int(emoji_id))
     return fallback_unicode
 
+
+def safe_modal_title(custom_emoji: str | None, fallback_unicode: str, text: str, max_length: int = 45):
+    emoji = fallback_unicode
+    if custom_emoji and not custom_emoji.startswith("<"):
+        emoji = custom_emoji
+    base_text = text.strip()
+    title = f"{emoji} {base_text}".strip()
+    if len(title) <= max_length:
+        return title
+    available = max_length - len(emoji) - 1
+    if available <= 0:
+        return emoji[:max_length]
+    trimmed_text = base_text[:available].rstrip()
+    return f"{emoji} {trimmed_text}".strip()
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -614,7 +629,9 @@ class BankView(discord.ui.View):
 
 class GiveawayEntryModal(discord.ui.Modal):
     def __init__(self, giveaway_id: int):
-        super().__init__(title=f"{EMOJI['tongue_lick']} Spend entries")
+        super().__init__(
+            title=safe_modal_title(EMOJI["tongue_lick"], "🏷️", "Spend entries")
+        )
         self.giveaway_id = giveaway_id
         self.entries_amount = discord.ui.TextInput(
             label="Entries to spend",
