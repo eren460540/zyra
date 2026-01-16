@@ -126,6 +126,8 @@ INVITE_STOCK_DEFAULTS = {
 
 invite_cache: Dict[int, int] = {}
 background_tasks: List[asyncio.Task] = []
+consecutive_message_tracker: Dict[int, Tuple[int, int]] = {}
+duplicate_message_tracker: Dict[int, List[Tuple[str, int]]] = {}
 
 
 db_pool = None
@@ -423,7 +425,15 @@ async def log_event(action: str, user_id: Optional[int], details: str):
     user_label = f"<@{user_id}>" if user_id else "Unknown"
     embed = None
 
-    if action == "automod_punishment":
+    if action == "automod_entry_ban":
+        title = f"{EMOJI['police']} {EMOJI['no_bully']} Automod Entry Ban"
+        embed = discord.Embed(title=title, color=discord.Color.dark_red())
+        embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
+        embed.add_field(name="Reason", value=parsed_details.get("reason", "Unknown"), inline=True)
+        embed.add_field(name="Entry ban duration", value="120s", inline=True)
+        cooldown_ts = parsed_details.get("no_entry_until", created_ts)
+        embed.add_field(name="Ends", value=f"<t:{cooldown_ts}:R>", inline=True)
+    elif action == "automod_punishment":
         title = f"{EMOJI['police']} {EMOJI['no_bully']} Automod Punishment"
         embed = discord.Embed(title=title, color=discord.Color.dark_red())
         embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
@@ -1486,33 +1496,71 @@ async def apply_automod(message: discord.Message) -> bool:
     current = now_ts()
     normalized = normalize_message(message.content)
     msg_hash = hash_message(normalized)
-    streak_count = state["streak_count"]
-    if current - state["last_streak_ts"] <= 12:
-        streak_count += 1
+    channel_state = consecutive_message_tracker.get(message.channel.id)
+    if channel_state and channel_state[0] == user_id:
+        consecutive_count = channel_state[1] + 1
     else:
-        streak_count = 1
-    punish_reason = None
-    if streak_count >= 3:
-        punish_reason = "severe_spam_streak"
-    if state["last_msg_hash"] == msg_hash and current - state["last_msg_ts"] <= 120:
-        punish_reason = punish_reason or "repeat_message"
-    if LINK_REGEX.search(normalized):
-        punish_reason = punish_reason or "link_detected"
-    if any(word in normalized for word in BLACKLIST):
-        punish_reason = punish_reason or "blacklist_detected"
+        consecutive_count = 1
+    consecutive_message_tracker[message.channel.id] = (user_id, consecutive_count)
+    duplicate_count = 0
+    if normalized:
+        history = duplicate_message_tracker.get(user_id, [])
+        history = [(entry_hash, ts) for entry_hash, ts in history if current - ts <= 120]
+        history.append((msg_hash, current))
+        duplicate_message_tracker[user_id] = history
+        duplicate_count = sum(1 for entry_hash, _ in history if entry_hash == msg_hash)
+    entry_ban_reason = None
+    if consecutive_count >= 5:
+        entry_ban_reason = "5 messages in a row"
+    if duplicate_count >= 3 and not entry_ban_reason:
+        entry_ban_reason = "3 duplicate messages"
+    link_detected = LINK_REGEX.search(normalized) if normalized else False
+    blacklist_detected = any(word in normalized for word in BLACKLIST) if normalized else False
     await db_pool.execute(
         """
         UPDATE automod_state
-        SET last_msg_hash=$1, last_msg_ts=$2, streak_count=$3, last_streak_ts=$4
-        WHERE user_id=$5
+        SET last_msg_hash=$1, last_msg_ts=$2
+        WHERE user_id=$3
         """,
         msg_hash,
         current,
-        streak_count,
-        current,
         user_id,
     )
-    if punish_reason:
+    if entry_ban_reason:
+        already_active = state["no_entry_until"] > current
+        no_entry_until = state["no_entry_until"] if already_active else current + 120
+        if not already_active:
+            await db_pool.execute(
+                "UPDATE automod_state SET no_entry_until=$1 WHERE user_id=$2",
+                no_entry_until,
+                user_id,
+            )
+        public_message = (
+            f"{message.author.mention} {EMOJI['police']} {EMOJI['no_bully']} "
+            "Please slow down and stop repeating. You can keep chatting, but entry rewards are paused for 2 minutes."
+        )
+        try:
+            await message.channel.send(
+                public_message,
+                delete_after=10,
+                allowed_mentions=discord.AllowedMentions(users=[message.author]),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        await log_event(
+            "automod_entry_ban",
+            user_id,
+            json.dumps(
+                {
+                    "reason": entry_ban_reason,
+                    "channel_id": message.channel.id,
+                    "no_entry_until": no_entry_until,
+                    "already_active": already_active,
+                }
+            ),
+        )
+        return True
+    if link_detected or blacklist_detected:
         try:
             await message.delete()
         except (discord.Forbidden, discord.NotFound):
@@ -1526,18 +1574,13 @@ async def apply_automod(message: discord.Message) -> bool:
             await message.author.send("Please avoid spam or prohibited content. Further issues may result in action.")
         except (discord.Forbidden, discord.HTTPException):
             pass
-        reason_map = {
-            "severe_spam_streak": "spam",
-            "repeat_message": "duplicate",
-            "link_detected": "link",
-            "blacklist_detected": "language",
-        }
+        reason = "link" if link_detected else "language"
         await log_event(
             "automod_punishment",
             user_id,
             json.dumps(
                 {
-                    "reason": reason_map.get(punish_reason, punish_reason),
+                    "reason": reason,
                     "channel_id": message.channel.id,
                     "message_id": message.id,
                     "content": message.content[:300],
