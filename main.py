@@ -58,7 +58,6 @@ EMOJI = {
     "yell": "<:meru_yell:1461407532579946690>",
 }
 
-MIN_MSG_LEN = 10
 RNG_COOLDOWN = 30
 
 timezone_berlin = ZoneInfo("Europe/Berlin")
@@ -722,8 +721,89 @@ class InvitesPanelView(discord.ui.View):
         guild = interaction.guild
         if not guild:
             return
+        now = now_ts()
+        event_state = await get_event_state()
+        existing_rows = await db_pool.fetch(
+            """
+            SELECT * FROM invite_codes
+            WHERE creator_id=$1 AND expires_at > $2
+            ORDER BY created_at DESC
+            """,
+            interaction.user.id,
+            now,
+        )
+        active_row = existing_rows[0] if existing_rows else None
+        if active_row and len(existing_rows) > 1:
+            older_codes = [row["code"] for row in existing_rows[1:]]
+            await db_pool.execute(
+                "UPDATE invite_codes SET expires_at=$1 WHERE code = ANY($2::text[])",
+                now,
+                older_codes,
+            )
+            await log_event(
+                "invite_code_multiple_active",
+                interaction.user.id,
+                json.dumps(
+                    {
+                        "kept_code": active_row["code"],
+                        "expired_codes": older_codes,
+                    }
+                ),
+            )
+        if active_row:
+            invite_exists = True
+            try:
+                invites = await guild.invites()
+                invite_exists = any(invite.code == active_row["invite_id"] for invite in invites)
+            except (discord.Forbidden, discord.HTTPException):
+                invite_exists = True
+            if invite_exists:
+                await log_event(
+                    "invite_code_reused",
+                    interaction.user.id,
+                    json.dumps(
+                        {
+                            "code": active_row["code"],
+                            "invite_id": active_row["invite_id"],
+                            "expires_at": active_row["expires_at"],
+                        }
+                    ),
+                )
+                description = (
+                    f"Invite URL: {active_row['invite_url']}\n"
+                    f"Expires: <t:{active_row['expires_at']}:R>\n"
+                    f"Event Ends: <t:{event_state.ends_at}:R>"
+                )
+                embed = build_embed(
+                    "invite",
+                    f"{EMOJI['nomnom']} Your Invite Code",
+                    description,
+                    [
+                        ("Uses Total", str(active_row["uses_total"]), True),
+                        ("Valid Uses", str(active_row["valid_uses"]), True),
+                        ("Invalid Uses", str(active_row["invalid_uses"]), True),
+                    ],
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            await db_pool.execute(
+                "UPDATE invite_codes SET expires_at=$1 WHERE code=$2",
+                now,
+                active_row["code"],
+            )
+            await log_event(
+                "invite_code_deleted",
+                interaction.user.id,
+                json.dumps(
+                    {
+                        "code": active_row["code"],
+                        "invite_id": active_row["invite_id"],
+                        "expires_at": active_row["expires_at"],
+                    }
+                ),
+            )
         code = await generate_invite_code()
-        expires_at = now_ts() + 7 * 86400
+        expires_at = now + 7 * 86400
         channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else guild.system_channel
         if not channel:
             await interaction.response.send_message(
@@ -753,18 +833,29 @@ class InvitesPanelView(discord.ui.View):
             interaction.user.id,
             invite.url,
             invite.code,
-            now_ts(),
+            now,
             expires_at,
         )
-        event_state = await get_event_state()
-        description = f"Invite URL: {invite.url}\nExpires: <t:{expires_at}:R>"
+        await log_event(
+            "invite_code_created",
+            interaction.user.id,
+            json.dumps(
+                {
+                    "code": code,
+                    "invite_id": invite.code,
+                    "expires_at": expires_at,
+                }
+            ),
+        )
+        description = f"Invite URL: {invite.url}\nExpires: <t:{expires_at}:R>\nEvent Ends: <t:{event_state.ends_at}:R>"
         embed = build_embed(
             "invite",
             f"{EMOJI['nomnom']} Your Invite Code",
             description,
             [
-                ("Uses", "0", True),
-                ("Event Ends", f"<t:{event_state.ends_at}:R>", True),
+                ("Uses Total", "0", True),
+                ("Valid Uses", "0", True),
+                ("Invalid Uses", "0", True),
             ],
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1265,8 +1356,6 @@ async def process_rng(message: discord.Message):
         return
     if state["rng_cooldown_until"] > now_ts():
         return
-    if len(message.content) < MIN_MSG_LEN:
-        return
     roll = random.random()
     award = None
     public = False
@@ -1371,7 +1460,7 @@ async def apply_automod(message: discord.Message) -> bool:
                     }
                 ),
             )
-        return True
+        return False
     user_id = message.author.id
     state = await db_pool.fetchrow("SELECT * FROM automod_state WHERE user_id=$1", user_id)
     if not state:
@@ -1440,8 +1529,8 @@ async def apply_automod(message: discord.Message) -> bool:
                 }
             ),
         )
-        return False
-    return True
+        return True
+    return False
 
 
 @bot.event
@@ -1550,8 +1639,8 @@ async def on_member_join(member: discord.Member):
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
-    approved = await apply_automod(message)
-    if approved:
+    punished = await apply_automod(message)
+    if not punished:
         await process_rng(message)
     await bot.process_commands(message)
 
