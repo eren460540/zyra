@@ -87,7 +87,7 @@ EMOJI = {
 }
 
 BANNER_MAP = {
-    "support": "https://cdn.discordapp.com/attachments/1431610649578045515/1462061267396067604/Futura.png",
+    "support": "https://cdn.discordapp.com/attachments/1431610647921295450/1462071555537371207/Futura.png?ex=696cdbbe&is=696b8a3e&hm=ea6abb68969eaa65b0480556ce01626ab7ca571cb5b8e6b1f6d95d84441ef7e1&",
     "invite": "https://cdn.discordapp.com/attachments/1431610647921295450/1462061858155397225/Copy_of_Support_Axolotl.png",
     "giveaway_normal": "https://cdn.discordapp.com/attachments/1431610647921295450/1462062175479795804/Copy_of_Support_Axolotl_1.png",
     "giveaway_big": "https://cdn.discordapp.com/attachments/1431610647921295450/1462062793670004923/Copy_of_Support_Axolotl_2.png",
