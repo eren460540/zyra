@@ -72,6 +72,27 @@ EMOJI = {
     "hope": "<:hope:1461837829624823984>",
     "life": "<:life:1461837831528775924>",
     "breath": "<:breath:1461837833881780326>",
+    "meru_blur_shock": "<:meru_blur_shock:1461406604619419894>",
+    "meru_clap": "<a:meru_clap:1461406550286405642>",
+    "meru_crying": "<:meru_crying:1461406843938148467>",
+    "meru_happy_pat": "<:meru_happy_pat:1461407271895433349>",
+    "meru_jump_hype": "<a:meru_jump_hype:1461407222931128597>",
+    "meru_no_bully": "<:meru_no_bully:1461403110936154402>",
+    "meru_panic": "<:meru_panic:1461406647066038628>",
+    "meru_peace": "<:meru_the_succubus_peace:1461407692693442774>",
+    "meru_pout": "<:meru_pout:1461402833239806096>",
+    "meru_sips_tea": "<:meru_sips_tea:1461403002727432383>",
+    "meru_stare": "<a:meru_stare:1461406688761610497>",
+    "meru_teef": "<:meru_teef:1461407089544007680>",
+}
+
+BANNER_MAP = {
+    "support": "https://cdn.discordapp.com/attachments/1431610649578045515/1462061267396067604/Futura.png",
+    "invite": "https://cdn.discordapp.com/attachments/1431610647921295450/1462061858155397225/Copy_of_Support_Axolotl.png",
+    "giveaway_normal": "https://cdn.discordapp.com/attachments/1431610647921295450/1462062175479795804/Copy_of_Support_Axolotl_1.png",
+    "giveaway_big": "https://cdn.discordapp.com/attachments/1431610647921295450/1462062793670004923/Copy_of_Support_Axolotl_2.png",
+    "bank": "https://cdn.discordapp.com/attachments/1431610647921295450/1462063329085493258/Copy_of_Support_Axolotl_3.png",
+    "rules": "https://cdn.discordapp.com/attachments/1431610647921295450/1462063474493489357/Copy_of_Support_Axolotl_4.png",
 }
 
 RANKS = [
@@ -215,8 +236,11 @@ def build_embed(kind: str, title: str, description: str, fields: List[Tuple[str,
         "support": discord.Color.blue(),
         "logs": discord.Color.dark_red(),
         "rng": discord.Color.gold(),
+        "rules": discord.Color.blue(),
     }
     embed = discord.Embed(title=title, description=description, color=color_map.get(kind, discord.Color.blurple()))
+    if kind in BANNER_MAP:
+        embed.set_image(url=BANNER_MAP[kind])
     for name, value, inline in fields:
         embed.add_field(name=name, value=value, inline=inline)
     footer = "ZyraBot • Economy/Invites/Support/Giveaways"
@@ -1394,17 +1418,21 @@ async def giveaway_ender():
 
 
 async def end_giveaway(row: asyncpg.Record):
-    channel = bot.get_channel(GENERAL_CHAT_CHANNEL_ID)
+    channel = bot.get_channel(row["channel_id"])
     if not channel:
-        return
+        try:
+            channel = await bot.fetch_channel(row["channel_id"])
+        except (discord.NotFound, discord.Forbidden):
+            return
     giveaway_id = row["id"]
     entries = await db_pool.fetch(
         "SELECT user_id, entries_spent FROM giveaway_entries WHERE giveaway_id=$1",
         giveaway_id,
     )
+    kind = "giveaway_big" if row["is_big"] else "giveaway_normal"
     if not entries:
         embed = build_embed(
-            "giveaway_normal",
+            kind,
             f"{EMOJI['moonlight']} Giveaway Ended",
             "No participants joined this time.",
             [("Prize", row["prize"], False)],
@@ -1417,9 +1445,21 @@ async def end_giveaway(row: asyncpg.Record):
     for entry in entries:
         weights.append((entry["user_id"], entry["entries_spent"]))
     winners = pick_weighted_winners(weights, row["winner_count"])
-    winner_mentions = "\n".join(f"<@{user_id}>" for user_id in winners)
+    winner_lines = []
+    guild = channel.guild if isinstance(channel, discord.abc.GuildChannel) else None
+    for user_id in winners:
+        member = guild.get_member(user_id) if guild else None
+        if not member and guild:
+            try:
+                member = await guild.fetch_member(user_id)
+            except (discord.NotFound, discord.Forbidden):
+                member = None
+        emoji = await get_economy_emoji_for_member(member)
+        mention = member.mention if member else f"<@{user_id}>"
+        winner_lines.append(f"{emoji} {mention} {emoji}")
+    winner_mentions = "\n".join(winner_lines)
     embed = build_embed(
-        "giveaway_normal",
+        kind,
         f"{EMOJI['star']} Winners!",
         "Congrats to the winners!",
         [
@@ -1446,6 +1486,16 @@ def pick_weighted_winners(entries: List[Tuple[int, int]], count: int) -> List[in
                 pool = [(uid, w) for uid, w in pool if uid != user_id]
                 break
     return winners
+
+
+async def get_economy_emoji_for_member(member: Optional[discord.Member]) -> str:
+    if not member or not member.guild:
+        return EMOJI["star"]
+    for emoji_key, _, role_id, _, _ in reversed(RANKS):
+        role = member.guild.get_role(role_id)
+        if role and role in member.roles:
+            return EMOJI[emoji_key]
+    return EMOJI["star"]
 
 
 async def process_rng(message: discord.Message):
@@ -1784,6 +1834,72 @@ async def on_message(message: discord.Message):
         await process_rng(message)
         await increment_daily_message(message.author.id)
     await bot.process_commands(message)
+
+
+@bot.command()
+async def rules(ctx: commands.Context):
+    title = f"📜 Server Rules ⭐ {EMOJI['moonlight']} {EMOJI['meru_clap']}"
+    fields = [
+        (
+            f"1️⃣ Respect Everyone ⚠️ {EMOJI['heart']} {EMOJI['meru_happy_pat']}",
+            "- No harassment, hate speech, slurs, threats, or discrimination.",
+            False,
+        ),
+        (
+            f"2️⃣ No Spam or Flooding 🚫 {EMOJI['rage']} {EMOJI['meru_panic']}",
+            "- No message spam, emoji spam, or farming activity.",
+            False,
+        ),
+        (
+            f"3️⃣ Links & Advertising 🔗 {EMOJI['doom']} {EMOJI['meru_no_bully']}",
+            "- No server ads, scam links, or self-promotion without staff approval.",
+            False,
+        ),
+        (
+            f"4️⃣ Content Guidelines 🖼️ {EMOJI['light']} {EMOJI['meru_blur_shock']}",
+            "- No NSFW, sexual, shocking, or disturbing content.",
+            False,
+        ),
+        (
+            f"5️⃣ Economy & Invites ⭐ {EMOJI['star']} {EMOJI['meru_teef']}",
+            "- No alt abuse, fake invites, or exploit attempts.\n"
+            "- Economy abuse results in resets or bans.",
+            False,
+        ),
+        (
+            f"6️⃣ Giveaways 🎁 {EMOJI['rank_heart']} {EMOJI['meru_jump_hype']}",
+            "- Giveaways are weighted by entries.\n"
+            "- Manipulation or abuse is forbidden.",
+            False,
+        ),
+        (
+            f"7️⃣ Support Tickets 🆘 {EMOJI['staff_hammer']} {EMOJI['meru_crying']}",
+            "- Tickets are for real issues only.\n"
+            "- Abuse of tickets is punishable.",
+            False,
+        ),
+        (
+            f"8️⃣ Staff Authority 🛡️ {EMOJI['moonlight']} {EMOJI['meru_stare']}",
+            "- Follow staff instructions.\n"
+            "- Do not argue moderation publicly.",
+            False,
+        ),
+        (
+            f"9️⃣ Discord ToS 📜 {EMOJI['void']} {EMOJI['meru_sips_tea']}",
+            "- Discord Terms of Service must be followed at all times.",
+            False,
+        ),
+    ]
+    embed = build_embed(
+        "rules",
+        title,
+        "Please read and follow these guidelines to keep the server safe and fun.",
+        fields,
+    )
+    embed.set_footer(
+        text=f"⚠️ Rules may change at any time • Staff decisions are final • {EMOJI['meru_peace']}"
+    )
+    await ctx.send(embed=embed)
 
 
 @bot.command()
