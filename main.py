@@ -56,7 +56,37 @@ EMOJI = {
     "police": "<:meru_the_succubus_police:1461407047940833464>",
     "tongue_lick": "<a:meru_tongue_lick:1461406893732790272>",
     "yell": "<:meru_yell:1461407532579946690>",
+    "moonlight": "<:moonlight:1448030595383820308>",
+    "staff_hammer": "<:staff_hammer:1461824018595319935>",
+    "star": "<a:star:1461824457332232212>",
+    "rage": "<:rage:1461837811455103078>",
+    "light": "<:light:1461837814030274590>",
+    "doom": "<:doom:1461837816207114303>",
+    "rank_heart": "<:heart:1461837817742360740>",
+    "mind": "<:mind:1461837819764019406>",
+    "void": "<:void:1461837821282095327>",
+    "blood": "<:blood:1461837823496683651>",
+    "space": "<:space:1461837825992294533>",
+    "time": "<:time:1461837827556904960>",
+    "hope": "<:hope:1461837829624823984>",
+    "life": "<:life:1461837831528775924>",
+    "breath": "<:breath:1461837833881780326>",
 }
+
+RANKS = [
+    ("life", "Life", 1461842819374256170, 0, 0),
+    ("mind", "Mind", 1461841654578417745, 50, 2),
+    ("light", "Light", 1461838997969174581, 200, 4),
+    ("breath", "Breath", 1461842885501522076, 500, 6),
+    ("time", "Time", 1461842595524247714, 1_250, 10),
+    ("rank_heart", "Heart", 1461839473162846401, 2_500, 15),
+    ("hope", "Hope", 1461842679506796556, 4_500, 20),
+    ("space", "Space", 1461842493799796872, 7_500, 30),
+    ("void", "Void", 1461841762770489364, 12_500, 45),
+    ("blood", "Blood", 1461841974457008220, 20_000, 65),
+    ("doom", "Doom", 1461839377343975567, 32_500, 90),
+    ("rage", "Rage", 1461838712450060442, 50_000, 125),
+]
 
 RNG_COOLDOWN = 30
 
@@ -127,7 +157,6 @@ INVITE_STOCK_DEFAULTS = {
 invite_cache: Dict[int, int] = {}
 background_tasks: List[asyncio.Task] = []
 consecutive_message_tracker: Dict[int, Tuple[int, int]] = {}
-duplicate_message_tracker: Dict[int, List[Tuple[str, int]]] = {}
 
 
 db_pool = None
@@ -219,8 +248,16 @@ async def run_migrations():
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 entries BIGINT NOT NULL DEFAULT 0,
-                last_interest_ts BIGINT NOT NULL DEFAULT 0
+                daily_messages INT NOT NULL DEFAULT 0,
+                last_daily_check BIGINT NOT NULL DEFAULT 0
             );
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS daily_messages INT NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS last_daily_check BIGINT NOT NULL DEFAULT 0;
             """
         )
         await conn.execute(
@@ -340,61 +377,60 @@ async def run_migrations():
 
 async def get_or_create_user(user_id: int) -> Dict[str, int]:
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT user_id, entries, last_interest_ts FROM users WHERE user_id=$1", user_id)
+        row = await conn.fetchrow(
+            "SELECT user_id, entries, daily_messages, last_daily_check FROM users WHERE user_id=$1",
+            user_id,
+        )
         if row:
             return dict(row)
         await conn.execute(
-            "INSERT INTO users (user_id, entries, last_interest_ts) VALUES ($1, $2, $3)",
+            """
+            INSERT INTO users (user_id, entries, daily_messages, last_daily_check)
+            VALUES ($1, $2, $3, $4)
+            """,
             user_id,
             0,
             0,
+            0,
         )
-        return {"user_id": user_id, "entries": 0, "last_interest_ts": 0}
+        return {"user_id": user_id, "entries": 0, "daily_messages": 0, "last_daily_check": 0}
 
 
-async def apply_interest(user_id: int, conn: Optional[asyncpg.Connection] = None) -> Dict[str, int]:
-    if conn is None:
-        async with db_pool.acquire() as pool_conn:
-            async with pool_conn.transaction():
-                return await apply_interest(user_id, pool_conn)
-    row = await conn.fetchrow(
-        "SELECT user_id, entries, last_interest_ts FROM users WHERE user_id=$1 FOR UPDATE",
+async def ensure_user(conn: asyncpg.Connection, user_id: int):
+    await conn.execute(
+        """
+        INSERT INTO users (user_id, entries, daily_messages, last_daily_check)
+        VALUES ($1, 0, 0, 0)
+        ON CONFLICT (user_id) DO NOTHING
+        """,
         user_id,
     )
-    if not row:
-        await conn.execute(
-            "INSERT INTO users (user_id, entries, last_interest_ts) VALUES ($1, $2, $3)",
-            user_id,
-            0,
-            0,
-        )
-        row = await conn.fetchrow(
-            "SELECT user_id, entries, last_interest_ts FROM users WHERE user_id=$1 FOR UPDATE",
-            user_id,
-        )
-    entries = int(row["entries"])
-    last_ts = int(row["last_interest_ts"])
-    current_ts = now_ts()
-    if last_ts == 0:
-        await conn.execute(
-            "UPDATE users SET last_interest_ts=$1 WHERE user_id=$2",
-            current_ts,
-            user_id,
-        )
-        return {"user_id": user_id, "entries": entries, "last_interest_ts": current_ts}
-    days = (current_ts - last_ts) // 86400
-    if days > 0:
-        factor = 1.0025 ** days
-        updated_entries = max(0, int(entries * factor))
-        new_ts = last_ts + days * 86400
-        await conn.execute(
-            "UPDATE users SET entries=$1, last_interest_ts=$2 WHERE user_id=$3",
-            updated_entries,
-            new_ts,
-            user_id,
-        )
-        return {"user_id": user_id, "entries": updated_entries, "last_interest_ts": new_ts}
-    return {"user_id": user_id, "entries": entries, "last_interest_ts": last_ts}
+
+
+async def increment_daily_message(user_id: int):
+    await db_pool.execute(
+        """
+        INSERT INTO users (user_id, entries, daily_messages, last_daily_check)
+        VALUES ($1, 0, 1, 0)
+        ON CONFLICT (user_id)
+        DO UPDATE SET daily_messages = users.daily_messages + 1
+        """,
+        user_id,
+    )
+
+
+async def update_user_roles(member: discord.Member, entries: int):
+    for emoji, name, role_id, required, _ in reversed(RANKS):
+        if entries >= required:
+            role = member.guild.get_role(role_id)
+            if role and role not in member.roles:
+                await member.add_roles(role)
+            for _, _, rid, _, _ in RANKS:
+                if rid != role_id:
+                    r = member.guild.get_role(rid)
+                    if r in member.roles:
+                        await member.remove_roles(r)
+            break
 
 
 async def log_event(action: str, user_id: Optional[int], details: str):
@@ -426,7 +462,7 @@ async def log_event(action: str, user_id: Optional[int], details: str):
     embed = None
 
     if action == "automod_entry_ban":
-        title = f"{EMOJI['police']} {EMOJI['no_bully']} Automod Entry Ban"
+        title = f"{EMOJI['staff_hammer']} {EMOJI['moonlight']} Automod Entry Ban"
         embed = discord.Embed(title=title, color=discord.Color.dark_red())
         embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
         embed.add_field(name="Reason", value=parsed_details.get("reason", "Unknown"), inline=True)
@@ -434,7 +470,7 @@ async def log_event(action: str, user_id: Optional[int], details: str):
         cooldown_ts = parsed_details.get("no_entry_until", created_ts)
         embed.add_field(name="Ends", value=f"<t:{cooldown_ts}:R>", inline=True)
     elif action == "automod_punishment":
-        title = f"{EMOJI['police']} {EMOJI['no_bully']} Automod Punishment"
+        title = f"{EMOJI['staff_hammer']} {EMOJI['moonlight']} Automod Punishment"
         embed = discord.Embed(title=title, color=discord.Color.dark_red())
         embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
         embed.add_field(name="Reason", value=parsed_details.get("reason", "Unknown"), inline=True)
@@ -443,7 +479,7 @@ async def log_event(action: str, user_id: Optional[int], details: str):
         cooldown_ts = parsed_details.get("no_entry_until", created_ts)
         embed.add_field(name="No-Entry Cooldown Ends", value=f"<t:{cooldown_ts}:R>", inline=False)
     elif action == "entries_gain":
-        title = f"{EMOJI['sparkle_eyes']} {EMOJI['heart']} Entries Gained"
+        title = f"{EMOJI['star']} {EMOJI['heart']} Entries Gained"
         embed = discord.Embed(title=title, color=discord.Color.teal())
         embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
         embed.add_field(name="Source", value=str(parsed_details.get("source", "Unknown")), inline=True)
@@ -451,7 +487,7 @@ async def log_event(action: str, user_id: Optional[int], details: str):
         embed.add_field(name="Balance After", value=str(parsed_details.get("new_balance", "Unknown")), inline=True)
         embed.add_field(name="Time", value=f"<t:{created_ts}:R>", inline=False)
     elif action == "invite_entries_granted":
-        title = f"{EMOJI['finger_point']} {EMOJI['nomnom']} Invite Entries Granted"
+        title = f"{EMOJI['star']} {EMOJI['moonlight']} Invite Entries Granted"
         embed = discord.Embed(title=title, color=discord.Color.green())
         embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
         embed.add_field(name="Tier", value=str(parsed_details.get("tier", "Unknown")), inline=True)
@@ -468,7 +504,7 @@ async def log_event(action: str, user_id: Optional[int], details: str):
         )
         embed.add_field(name="Time", value=f"<t:{created_ts}:R>", inline=False)
     elif action == "admin_bypass":
-        title = f"{EMOJI['sleeping']} Admin Bypass Notice"
+        title = f"{EMOJI['moonlight']} Admin Bypass Notice"
         embed = discord.Embed(title=title, color=discord.Color.dark_grey())
         embed.add_field(name="User", value=f"{user_label} ({user_id})" if user_id else "Unknown", inline=False)
         embed.add_field(name="Reason", value=parsed_details.get("reason", "Unknown"), inline=True)
@@ -597,42 +633,18 @@ class BankView(discord.ui.View):
     @discord.ui.button(
         label="View My Entries",
         style=discord.ButtonStyle.primary,
-        emoji=safe_button_emoji(EMOJI["sparkle_eyes"], "✨"),
+        emoji=safe_button_emoji(EMOJI["star"], "✨"),
         custom_id="bank_view_entries",
     )
     async def view_entries(self, interaction: discord.Interaction, button: discord.ui.Button):
         user = interaction.user
-        data = await apply_interest(user.id)
-        description = (
-            f"Balance: **{data['entries']:,}** entries {EMOJI['happy_pat']} {EMOJI['teef']}\n"
-            f"Next interest applies automatically on your next interaction."
-        )
+        data = await get_or_create_user(user.id)
+        description = f"Balance: **{data['entries']:,}** entries {EMOJI['star']}"
         embed = build_embed(
             "bank",
-            f"{EMOJI['sparkle_eyes']} {EMOJI['heart']} Bank Entries",
+            f"{EMOJI['star']} {EMOJI['heart']} Bank Entries",
             description,
-            [("Last Interest", f"<t:{data['last_interest_ts']}:R>", True)],
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(
-        label="Interest Info",
-        style=discord.ButtonStyle.secondary,
-        emoji=safe_button_emoji(EMOJI["sips_tea"], "🍵"),
-        custom_id="bank_interest_info",
-    )
-    async def interest_info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = interaction.user
-        data = await apply_interest(user.id)
-        description = (
-            f"Daily interest is **0.25%** compounded. {EMOJI['sips_tea']}\n"
-            "It applies lazily when you use bank/giveaway/invite actions."
-        )
-        embed = build_embed(
-            "bank",
-            f"{EMOJI['sparkle_eyes']} {EMOJI['heart']} Interest Info",
-            description,
-            [("Current Balance", f"{data['entries']:,} entries", True)],
+            [],
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -640,7 +652,7 @@ class BankView(discord.ui.View):
 class GiveawayEntryModal(discord.ui.Modal):
     def __init__(self, giveaway_id: int):
         super().__init__(
-            title=safe_modal_title(EMOJI["tongue_lick"], "🏷️", "Spend entries")
+            title=safe_modal_title(EMOJI["star"], "🏷️", "Spend entries")
         )
         self.giveaway_id = giveaway_id
         self.entries_amount = discord.ui.TextInput(
@@ -658,21 +670,21 @@ class GiveawayEntryModal(discord.ui.Modal):
             amount = int(self.entries_amount.value.strip())
         except ValueError:
             await interaction.response.send_message(
-                f"{EMOJI['cheek_pull']} {EMOJI['pout']} Invalid entry amount.",
+                f"{EMOJI['moonlight']} Invalid entry amount.",
                 ephemeral=True,
             )
             await log_event("economy_abuse", user.id, "Non-integer giveaway entry attempt.")
             return
         if amount <= 0 or amount > 10_000_000:
             await interaction.response.send_message(
-                f"{EMOJI['cheek_pull']} {EMOJI['pout']} Invalid entry amount.",
+                f"{EMOJI['moonlight']} Invalid entry amount.",
                 ephemeral=True,
             )
             await log_event("economy_abuse", user.id, f"Invalid giveaway entry amount: {amount}.")
             return
         async with db_pool.acquire() as conn:
             async with conn.transaction():
-                await apply_interest(user.id, conn)
+                await ensure_user(conn, user.id)
                 row = await conn.fetchrow(
                     "SELECT entries FROM users WHERE user_id=$1 FOR UPDATE",
                     user.id,
@@ -680,7 +692,7 @@ class GiveawayEntryModal(discord.ui.Modal):
                 balance = int(row["entries"])
                 if balance < amount:
                     await interaction.response.send_message(
-                        f"{EMOJI['cheek_pull']} {EMOJI['pout']} You don't have enough entries.",
+                        f"{EMOJI['moonlight']} You don't have enough entries.",
                         ephemeral=True,
                     )
                     return
@@ -691,7 +703,7 @@ class GiveawayEntryModal(discord.ui.Modal):
                 )
                 if existing:
                     await interaction.response.send_message(
-                        f"{EMOJI['cheek_pull']} {EMOJI['pout']} You already entered.",
+                        f"{EMOJI['moonlight']} You already entered.",
                         ephemeral=True,
                     )
                     await log_event("economy_abuse", user.id, "Duplicate giveaway entry attempt.")
@@ -711,8 +723,11 @@ class GiveawayEntryModal(discord.ui.Modal):
                     amount,
                     now_ts(),
                 )
+                new_balance = balance - amount
+        if isinstance(user, discord.Member):
+            await update_user_roles(user, new_balance)
         await interaction.response.send_message(
-            f"{EMOJI['nomnom']} {EMOJI['finger_point']} Entry recorded! Good luck.",
+            f"{EMOJI['star']} Entry recorded! Good luck.",
             ephemeral=True,
         )
 
@@ -724,7 +739,7 @@ class GiveawayView(discord.ui.View):
         button = discord.ui.Button(
             label="Enter Giveaway",
             style=discord.ButtonStyle.success,
-            emoji=safe_button_emoji(EMOJI["finger_point"], "👉"),
+            emoji=safe_button_emoji(EMOJI["star"], "👉"),
             custom_id=f"giveaway_enter_{giveaway_id}",
         )
         button.callback = self.enter_giveaway
@@ -741,7 +756,7 @@ class InvitesPanelView(discord.ui.View):
     @discord.ui.button(
         label="Code",
         style=discord.ButtonStyle.primary,
-        emoji=safe_button_emoji(EMOJI["tongue_lick"], "🏷️"),
+        emoji=safe_button_emoji(EMOJI["star"], "🏷️"),
         custom_id="invites_code",
     )
     async def invite_code(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -803,7 +818,7 @@ class InvitesPanelView(discord.ui.View):
                 )
                 embed = build_embed(
                     "invite",
-                    f"{EMOJI['nomnom']} Your Invite Code",
+                    f"{EMOJI['star']} Your Invite Code",
                     description,
                     [
                         ("Uses Total", str(active_row["uses_total"]), True),
@@ -834,7 +849,7 @@ class InvitesPanelView(discord.ui.View):
         channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else guild.system_channel
         if not channel:
             await interaction.response.send_message(
-                f"{EMOJI['cheek_pull']} {EMOJI['pout']} I couldn't find a channel for invites.",
+                f"{EMOJI['moonlight']} I couldn't find a channel for invites.",
                 ephemeral=True,
             )
             return
@@ -847,7 +862,7 @@ class InvitesPanelView(discord.ui.View):
             )
         except (discord.Forbidden, discord.HTTPException):
             await interaction.response.send_message(
-                f"{EMOJI['cheek_pull']} {EMOJI['pout']} I couldn't create an invite.",
+                f"{EMOJI['moonlight']} I couldn't create an invite.",
                 ephemeral=True,
             )
             return
@@ -877,7 +892,7 @@ class InvitesPanelView(discord.ui.View):
         description = f"Invite URL: {invite.url}\nExpires: <t:{expires_at}:R>\nEvent Ends: <t:{event_state.ends_at}:R>"
         embed = build_embed(
             "invite",
-            f"{EMOJI['nomnom']} Your Invite Code",
+            f"{EMOJI['star']} Your Invite Code",
             description,
             [
                 ("Uses Total", "0", True),
@@ -890,7 +905,7 @@ class InvitesPanelView(discord.ui.View):
     @discord.ui.button(
         label="Stats",
         style=discord.ButtonStyle.secondary,
-        emoji=safe_button_emoji(EMOJI["stare"], "📊"),
+        emoji=safe_button_emoji(EMOJI["star"], "📊"),
         custom_id="invites_stats",
     )
     async def invite_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -909,7 +924,7 @@ class InvitesPanelView(discord.ui.View):
         invalid_uses = int(row["invalid_uses"] or 0)
         embed = build_embed(
             "invite",
-            f"{EMOJI['stare']} Invite Stats",
+            f"{EMOJI['star']} Invite Stats",
             "Current event stats.",
             [
                 ("Valid", str(valid_uses), True),
@@ -922,7 +937,7 @@ class InvitesPanelView(discord.ui.View):
     @discord.ui.button(
         label="Buy",
         style=discord.ButtonStyle.success,
-        emoji=safe_button_emoji(EMOJI["drool"], "🛒"),
+        emoji=safe_button_emoji(EMOJI["star"], "🛒"),
         custom_id="invites_buy",
     )
     async def invite_buy(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -934,7 +949,7 @@ class InvitesPanelView(discord.ui.View):
         )
         embed = build_embed(
             "invite",
-            f"{EMOJI['drool']} Buy Rewards",
+            f"{EMOJI['star']} Buy Rewards",
             "Check current stock before buying.",
             [("Stock", stock_info, False)],
         )
@@ -995,7 +1010,7 @@ class SupportPanelView(discord.ui.View):
         )
         if existing:
             await interaction.response.send_message(
-                f"{EMOJI['nervous_stare']} You already have an open ticket.",
+                f"{EMOJI['moonlight']} You already have an open ticket.",
                 ephemeral=True,
             )
             return
@@ -1020,7 +1035,7 @@ class SupportPanelView(discord.ui.View):
             view=TicketCloseView(channel.id),
         )
         await interaction.response.send_message(
-            f"{EMOJI['nervous_stare']} Ticket created: {channel.mention}",
+            f"{EMOJI['moonlight']} Ticket created: {channel.mention}",
             ephemeral=True,
         )
         await log_event("ticket_created", interaction.user.id, f"Ticket channel {channel.id}")
@@ -1033,7 +1048,7 @@ class SupportPanelView(discord.ui.View):
     )
     async def trade(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            f"{EMOJI['derp']} {EMOJI['panties']} Trading is coming soon!",
+            f"{EMOJI['moonlight']} Trading is coming soon!",
             ephemeral=True,
         )
 
@@ -1074,7 +1089,7 @@ class ReportModal(discord.ui.Modal):
             f"Reported ID: {reported_id} | Reason: {reason}",
         )
         await interaction.response.send_message(
-            f"{EMOJI['gun']} {EMOJI['no_bully']} Your report was submitted.",
+            f"{EMOJI['staff_hammer']} Your report was submitted.",
             ephemeral=True,
         )
 
@@ -1086,7 +1101,7 @@ class TicketCloseView(discord.ui.View):
         button = discord.ui.Button(
             label="Close Ticket",
             style=discord.ButtonStyle.danger,
-            emoji=safe_button_emoji(EMOJI["bonk"], "🔒"),
+            emoji=safe_button_emoji(EMOJI["staff_hammer"], "🔒"),
             custom_id=f"ticket_close_{channel_id}",
         )
         button.callback = self.close_ticket
@@ -1095,7 +1110,7 @@ class TicketCloseView(discord.ui.View):
     async def close_ticket(self, interaction: discord.Interaction):
         if interaction.channel_id != self.channel_id:
             await interaction.response.send_message(
-                f"{EMOJI['cheek_pull']} {EMOJI['pout']} This close button isn't for this channel.",
+                f"{EMOJI['moonlight']} This close button isn't for this channel.",
                 ephemeral=True,
             )
             return
@@ -1124,7 +1139,7 @@ async def generate_invite_code() -> str:
 async def handle_invite_purchase(interaction: discord.Interaction, user_id: int, needed_invites: int, reward: int):
     if interaction.user.id != user_id:
         await interaction.response.send_message(
-            f"{EMOJI['cheek_pull']} {EMOJI['pout']} This menu isn't for you.",
+            f"{EMOJI['moonlight']} This menu isn't for you.",
             ephemeral=True,
         )
         return
@@ -1139,7 +1154,7 @@ async def handle_invite_purchase(interaction: discord.Interaction, user_id: int,
             if stock_value <= 0:
                 embed = build_embed(
                     "invite",
-                    f"{EMOJI['panic']} {EMOJI['pout']} Out of Stock",
+                    f"{EMOJI['moonlight']} Out of Stock",
                     "Try again after the next reset.",
                     [("Resets", f"<t:{state_row['ends_at']}:R>", True)],
                 )
@@ -1157,11 +1172,11 @@ async def handle_invite_purchase(interaction: discord.Interaction, user_id: int,
             valid_invites = int(row["valid_count"] or 0)
             if valid_invites < needed_invites:
                 await interaction.response.send_message(
-                    f"{EMOJI['cheek_pull']} {EMOJI['pout']} Not enough valid invites.",
+                    f"{EMOJI['moonlight']} Not enough valid invites.",
                     ephemeral=True,
                 )
                 return
-            await apply_interest(user_id, conn)
+            await ensure_user(conn, user_id)
             row = await conn.fetchrow(
                 "SELECT entries FROM users WHERE user_id=$1 FOR UPDATE",
                 user_id,
@@ -1178,11 +1193,13 @@ async def handle_invite_purchase(interaction: discord.Interaction, user_id: int,
             )
     embed = build_embed(
         "invite",
-        f"{EMOJI['happy_pat']} {EMOJI['clap']} Purchase Complete",
+        f"{EMOJI['star']} Purchase Complete",
         f"You gained **{reward}** entries.",
         [("New Balance", "Updated", True)],
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    if isinstance(interaction.user, discord.Member):
+        await update_user_roles(interaction.user, new_balance)
     await log_event(
         "entries_gain",
         user_id,
@@ -1212,14 +1229,13 @@ async def handle_invite_purchase(interaction: discord.Interaction, user_id: int,
 
 
 async def create_bank_panel(channel: discord.TextChannel):
-    description = f"Entries persist forever and earn 0.25% daily interest. {EMOJI['cozy']} {EMOJI['shy_blush']}"
+    description = f"Entries persist forever and can be used for giveaways and events. {EMOJI['moonlight']}"
     fields = [
-        ("Daily Interest", "0.25% compounded daily", True),
         ("Uses", "Giveaways + events", True),
     ]
     embed = build_embed(
         "bank",
-        f"{EMOJI['sparkle_eyes']} {EMOJI['heart']} Bank Panel",
+        f"{EMOJI['star']} {EMOJI['heart']} Bank Panel",
         description,
         fields,
     )
@@ -1230,7 +1246,7 @@ async def create_support_panel(channel: discord.TextChannel):
     description = "Trading is 100% Secured. If you have serious issues create a ticket."
     embed = build_embed(
         "support",
-        f"{EMOJI['police']} {EMOJI['no_bully']} Support Panel",
+        f"{EMOJI['staff_hammer']} {EMOJI['moonlight']} Support Panel",
         description,
         [("Need help?", "Open a ticket below.", False)],
     )
@@ -1249,7 +1265,7 @@ async def create_invites_panel(channel: discord.TextChannel, event_state: EventS
     ]
     embed = build_embed(
         "invite",
-        f"{EMOJI['finger_point']} {EMOJI['peace']} Invites Panel",
+        f"{EMOJI['star']} {EMOJI['moonlight']} Invites Panel",
         description,
         fields,
     )
@@ -1267,6 +1283,66 @@ async def refresh_invites_panel():
     if not channel:
         return
     await create_invites_panel(channel, event_state)
+
+
+async def daily_role_payout():
+    while True:
+        now_local = berlin_now()
+        target = next_daily_time(21, 0)
+        await asyncio.sleep((target - now_local).total_seconds())
+
+        guild = bot.guilds[0] if bot.guilds else None
+        if not guild:
+            continue
+
+        async with db_pool.acquire() as conn:
+            users = await conn.fetch(
+                "SELECT user_id, daily_messages, entries FROM users"
+            )
+
+            for user in users:
+                if user["daily_messages"] < 50:
+                    continue
+
+                member = guild.get_member(user["user_id"])
+                if not member:
+                    continue
+
+                highest = None
+                for rank in RANKS:
+                    if member.get_role(rank[2]):
+                        highest = rank
+
+                if not highest:
+                    continue
+
+                reward = highest[4]
+                if reward <= 0:
+                    continue
+
+                new_balance = int(user["entries"]) + reward
+                await conn.execute(
+                    "UPDATE users SET entries = entries + $1 WHERE user_id=$2",
+                    reward,
+                    user["user_id"],
+                )
+
+                await log_event(
+                    "entries_gain",
+                    user["user_id"],
+                    json.dumps(
+                        {
+                            "source": "daily_role_reward",
+                            "amount": reward,
+                            "role": highest[1],
+                            "new_balance": new_balance,
+                        }
+                    ),
+                )
+
+                await update_user_roles(member, new_balance)
+
+            await conn.execute("UPDATE users SET daily_messages = 0")
 
 
 async def scheduled_tasks():
@@ -1327,7 +1403,7 @@ async def end_giveaway(row: asyncpg.Record):
     if not entries:
         embed = build_embed(
             "giveaway_normal",
-            f"{EMOJI['sad_cry']} {EMOJI['crying']} Giveaway Ended",
+            f"{EMOJI['moonlight']} Giveaway Ended",
             "No participants joined this time.",
             [("Prize", row["prize"], False)],
         )
@@ -1342,7 +1418,7 @@ async def end_giveaway(row: asyncpg.Record):
     winner_mentions = "\n".join(f"<@{user_id}>" for user_id in winners)
     embed = build_embed(
         "giveaway_normal",
-        f"{EMOJI['clap']} {EMOJI['peace']} {EMOJI['sparkle_eyes']} Winners!",
+        f"{EMOJI['star']} Winners!",
         "Congrats to the winners!",
         [
             ("Prize", row["prize"], False),
@@ -1389,23 +1465,23 @@ async def process_rng(message: discord.Message):
     if roll < 0.000001:
         award = 250
         public = True
-        title = f"{EMOJI['yell']} {EMOJI['jump_hype']} {EMOJI['bongo_hype']} Huge Drop!"
+        title = f"{EMOJI['star']} Huge Drop!"
     elif roll < 0.000011:
         award = 100
         public = True
-        title = f"{EMOJI['yell']} {EMOJI['jump_hype']} {EMOJI['bongo_hype']} Jackpot!"
+        title = f"{EMOJI['star']} Jackpot!"
     elif roll < 0.000111:
         award = 50
         public = True
-        title = f"{EMOJI['blur_shock']} {EMOJI['stare']} Big Bonus!"
+        title = f"{EMOJI['star']} Big Bonus!"
     elif roll < 0.00111:
         award = 25
         public = True
-        title = f"{EMOJI['sparkle_eyes']} Lucky +25"
+        title = f"{EMOJI['star']} Lucky +25"
     elif roll < 0.00361:
         award = 10
         public = True
-        title = f"{EMOJI['sparkle_eyes']} Lucky +10"
+        title = f"{EMOJI['star']} Lucky +10"
     elif roll < 0.00861:
         award = 8
     elif roll < 0.01861:
@@ -1425,7 +1501,7 @@ async def process_rng(message: discord.Message):
         return
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await apply_interest(user_id, conn)
+            await ensure_user(conn, user_id)
             row = await conn.fetchrow(
                 "SELECT entries FROM users WHERE user_id=$1 FOR UPDATE",
                 user_id,
@@ -1442,6 +1518,8 @@ async def process_rng(message: discord.Message):
                 now_ts() + RNG_COOLDOWN,
                 user_id,
             )
+    if isinstance(message.author, discord.Member):
+        await update_user_roles(message.author, new_balance)
     await log_event(
         "entries_gain",
         user_id,
@@ -1502,18 +1580,9 @@ async def apply_automod(message: discord.Message) -> bool:
     else:
         consecutive_count = 1
     consecutive_message_tracker[message.channel.id] = (user_id, consecutive_count)
-    duplicate_count = 0
-    if normalized:
-        history = duplicate_message_tracker.get(user_id, [])
-        history = [(entry_hash, ts) for entry_hash, ts in history if current - ts <= 120]
-        history.append((msg_hash, current))
-        duplicate_message_tracker[user_id] = history
-        duplicate_count = sum(1 for entry_hash, _ in history if entry_hash == msg_hash)
     entry_ban_reason = None
     if consecutive_count >= 5:
         entry_ban_reason = "5 messages in a row"
-    if duplicate_count >= 3 and not entry_ban_reason:
-        entry_ban_reason = "3 duplicate messages"
     link_detected = LINK_REGEX.search(normalized) if normalized else False
     blacklist_detected = any(word in normalized for word in BLACKLIST) if normalized else False
     await db_pool.execute(
@@ -1536,7 +1605,7 @@ async def apply_automod(message: discord.Message) -> bool:
                 user_id,
             )
         public_message = (
-            f"{message.author.mention} {EMOJI['police']} {EMOJI['no_bully']} "
+            f"{message.author.mention} {EMOJI['staff_hammer']} "
             "Please slow down and stop repeating. You can keep chatting, but entry rewards are paused for 2 minutes."
         )
         try:
@@ -1630,6 +1699,7 @@ async def on_ready():
     if not background_tasks:
         background_tasks.append(asyncio.create_task(giveaway_ender()))
         background_tasks.append(asyncio.create_task(scheduled_tasks()))
+        background_tasks.append(asyncio.create_task(daily_role_payout()))
 
 
 @bot.event
@@ -1702,7 +1772,33 @@ async def on_message(message: discord.Message):
     punished = await apply_automod(message)
     if not punished:
         await process_rng(message)
+        await increment_daily_message(message.author.id)
     await bot.process_commands(message)
+
+
+@bot.command()
+async def rank(ctx: commands.Context):
+    lines = []
+
+    for emoji_key, name, _, required, daily in RANKS:
+        e = EMOJI[emoji_key]
+        lines.append(
+            f"{e} *{name}* {e}\n"
+            f"Entries Required: **{required:,}**\n"
+            f"Daily Gain: **+{daily}**\n"
+        )
+
+    embed = discord.Embed(
+        title=f"{EMOJI['moonlight']} *Ranks* {EMOJI['moonlight']}",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+    )
+
+    embed.set_footer(
+        text="Paid daily at 21:00 CET if you send 50 valid messages."
+    )
+
+    await ctx.send(embed=embed)
 
 
 @bot.command()
@@ -1754,7 +1850,7 @@ async def host(ctx: commands.Context, *args: str):
     end_timestamp = now_ts() + duration
     embed = build_embed(
         "giveaway_normal",
-        f"{EMOJI['heart']} {EMOJI['clap']} Giveaway",
+        f"{EMOJI['heart']} {EMOJI['star']} Giveaway",
         "Spend entries to enter. Each entry increases your weight.",
         [
             ("Prize", prize, False),
@@ -1809,7 +1905,7 @@ async def bighost(ctx: commands.Context, *args: str):
     end_timestamp = now_ts() + duration
     embed = build_embed(
         "giveaway_big",
-        f"{EMOJI['bongo_hype']} {EMOJI['jump_hype']} {EMOJI['sparkle_eyes']} {EMOJI['blur_shock']} BIG Giveaway",
+        f"{EMOJI['star']} BIG Giveaway",
         "Spend entries to enter. Each entry increases your weight.",
         [
             ("Prize", prize, False),
