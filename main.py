@@ -20,6 +20,7 @@ if not TOKEN:
 
 GENERAL_CHAT_CHANNEL_ID = 1449829926990512189
 STAFF_LOG_CHANNEL_ID = 1440730206187950122
+REPORTS_CHANNEL_ID = 1462013250802552853
 INVITES_PANEL_CHANNEL_ID = 1442936279644897381
 STAFF_TICKET_ROLE_ID = 1431610644721041587
 
@@ -447,7 +448,8 @@ async def log_event(action: str, user_id: Optional[int], details: str):
     except Exception:
         pass
 
-    channel = bot.get_channel(STAFF_LOG_CHANNEL_ID)
+    log_channel_id = REPORTS_CHANNEL_ID if action.startswith("report_") else STAFF_LOG_CHANNEL_ID
+    channel = bot.get_channel(log_channel_id)
     if not channel:
         return
 
@@ -1565,6 +1567,12 @@ async def apply_automod(message: discord.Message) -> bool:
                     }
                 ),
             )
+        channel_state = consecutive_message_tracker.get(message.channel.id)
+        if channel_state and channel_state[0] == message.author.id:
+            consecutive_count = channel_state[1] + 1
+        else:
+            consecutive_count = 1
+        consecutive_message_tracker[message.channel.id] = (message.author.id, consecutive_count)
         return False
     user_id = message.author.id
     state = await db_pool.fetchrow("SELECT * FROM automod_state WHERE user_id=$1", user_id)
@@ -1574,15 +1582,6 @@ async def apply_automod(message: discord.Message) -> bool:
     current = now_ts()
     normalized = normalize_message(message.content)
     msg_hash = hash_message(normalized)
-    channel_state = consecutive_message_tracker.get(message.channel.id)
-    if channel_state and channel_state[0] == user_id:
-        consecutive_count = channel_state[1] + 1
-    else:
-        consecutive_count = 1
-    consecutive_message_tracker[message.channel.id] = (user_id, consecutive_count)
-    entry_ban_reason = None
-    if consecutive_count >= 5:
-        entry_ban_reason = "5 messages in a row"
     link_detected = LINK_REGEX.search(normalized) if normalized else False
     blacklist_detected = any(word in normalized for word in BLACKLIST) if normalized else False
     await db_pool.execute(
@@ -1595,6 +1594,45 @@ async def apply_automod(message: discord.Message) -> bool:
         current,
         user_id,
     )
+    if link_detected or blacklist_detected:
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound):
+            pass
+        await db_pool.execute(
+            "UPDATE automod_state SET no_entry_until=$1 WHERE user_id=$2",
+            current + 120,
+            user_id,
+        )
+        try:
+            await message.author.send("Please avoid spam or prohibited content. Further issues may result in action.")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        reason = "link" if link_detected else "language"
+        await log_event(
+            "automod_punishment",
+            user_id,
+            json.dumps(
+                {
+                    "reason": reason,
+                    "channel_id": message.channel.id,
+                    "message_id": message.id,
+                    "content": message.content[:300],
+                    "duration_seconds": 120,
+                    "no_entry_until": current + 120,
+                }
+            ),
+        )
+        return True
+    channel_state = consecutive_message_tracker.get(message.channel.id)
+    if channel_state and channel_state[0] == user_id:
+        consecutive_count = channel_state[1] + 1
+    else:
+        consecutive_count = 1
+    consecutive_message_tracker[message.channel.id] = (user_id, consecutive_count)
+    entry_ban_reason = None
+    if consecutive_count >= 5:
+        entry_ban_reason = "5 messages in a row"
     if entry_ban_reason:
         already_active = state["no_entry_until"] > current
         no_entry_until = state["no_entry_until"] if already_active else current + 120
@@ -1625,36 +1663,6 @@ async def apply_automod(message: discord.Message) -> bool:
                     "channel_id": message.channel.id,
                     "no_entry_until": no_entry_until,
                     "already_active": already_active,
-                }
-            ),
-        )
-        return True
-    if link_detected or blacklist_detected:
-        try:
-            await message.delete()
-        except (discord.Forbidden, discord.NotFound):
-            pass
-        await db_pool.execute(
-            "UPDATE automod_state SET no_entry_until=$1 WHERE user_id=$2",
-            current + 120,
-            user_id,
-        )
-        try:
-            await message.author.send("Please avoid spam or prohibited content. Further issues may result in action.")
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-        reason = "link" if link_detected else "language"
-        await log_event(
-            "automod_punishment",
-            user_id,
-            json.dumps(
-                {
-                    "reason": reason,
-                    "channel_id": message.channel.id,
-                    "message_id": message.id,
-                    "content": message.content[:300],
-                    "duration_seconds": 120,
-                    "no_entry_until": current + 120,
                 }
             ),
         )
