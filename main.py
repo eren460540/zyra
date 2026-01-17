@@ -93,6 +93,9 @@ BANNER_MAP = {
     "giveaway_big": "https://cdn.discordapp.com/attachments/1431610647921295450/1462062793670004923/Copy_of_Support_Axolotl_2.png",
     "bank": "https://cdn.discordapp.com/attachments/1431610647921295450/1462063329085493258/Copy_of_Support_Axolotl_3.png",
     "rules": "https://cdn.discordapp.com/attachments/1431610647921295450/1462063474493489357/Copy_of_Support_Axolotl_4.png",
+    "rank": "https://cdn.discordapp.com/attachments/1431610647921295450/1462091835483623627/Copy_of_Support_Axolotl_5.png?ex=696ceea1&is=696b9d21&hm=1635f96ee018aad324b9d8fee023830eb121a3fef6fc458497c23d768049b71e&",
+    "chance": "https://cdn.discordapp.com/attachments/1431610647921295450/1462095033825230878/Copy_of_Support_Axolotl_6.png",
+    "dice": "https://cdn.discordapp.com/attachments/1431610647921295450/1462097366285946961/Copy_of_Support_Axolotl_7.png?ex=696cf3c8&is=696ba248&hm=5eeda0754ffb970dc14406a15eed9b0c79426d5cc9492e74ef8e208835b05e59&",
 }
 
 RANKS = [
@@ -110,7 +113,7 @@ RANKS = [
     ("rage", "Rage", 1461838712450060442, 50_000, 125),
 ]
 
-RNG_COOLDOWN = 30
+RNG_COOLDOWN = 0
 
 timezone_berlin = ZoneInfo("Europe/Berlin")
 
@@ -236,6 +239,9 @@ COLOR_MAP = {
     "logs": discord.Color.dark_red(),
     "rng": discord.Color.gold(),
     "rules": discord.Color.blue(),
+    "rank": discord.Color.gold(),
+    "chance": discord.Color.gold(),
+    "dice": discord.Color.orange(),
 }
 
 
@@ -689,6 +695,115 @@ class BankView(discord.ui.View):
             [],
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class DiceRollModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="🎲 Dice Roll")
+        self.entries_amount = discord.ui.TextInput(
+            label="Entries to roll",
+            style=discord.TextStyle.short,
+            placeholder="Enter a number (e.g. 10, 50, 100)",
+            required=True,
+            max_length=10,
+        )
+        self.add_item(self.entries_amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user = interaction.user
+        try:
+            amount = int(self.entries_amount.value.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                f"{EMOJI['moonlight']} Invalid entry amount.",
+                ephemeral=True,
+            )
+            return
+        if amount < 1 or amount > 100_000:
+            await interaction.response.send_message(
+                f"{EMOJI['moonlight']} Enter between 1 and 100000 entries.",
+                ephemeral=True,
+            )
+            return
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user(conn, user.id)
+                row = await conn.fetchrow(
+                    "SELECT entries FROM users WHERE user_id=$1 FOR UPDATE",
+                    user.id,
+                )
+                balance = int(row["entries"])
+                if balance < amount:
+                    await interaction.response.send_message(
+                        f"{EMOJI['moonlight']} You don't have enough entries.",
+                        ephemeral=True,
+                    )
+                    return
+                face_counts = {face: 0 for face in range(1, 7)}
+                net_change = 0
+                for _ in range(amount):
+                    roll = random.randint(1, 6)
+                    face_counts[roll] += 1
+                    if roll <= 3:
+                        net_change -= 1
+                    else:
+                        net_change += 2
+                new_balance = balance + net_change
+                await conn.execute(
+                    "UPDATE users SET entries=$1 WHERE user_id=$2",
+                    new_balance,
+                    user.id,
+                )
+        if isinstance(user, discord.Member):
+            await update_user_roles(user, new_balance)
+        await log_event(
+            "entries_gain",
+            user.id,
+            json.dumps(
+                {
+                    "source": "dice_roll",
+                    "amount_rolled": amount,
+                    "net_change": net_change,
+                    "new_balance": new_balance,
+                    "channel_id": interaction.channel_id,
+                }
+            ),
+        )
+        description = (
+            f"Rolls: **{amount:,}**\n"
+            f"Net change: **{net_change:+,}** entries\n"
+            f"New balance: **{new_balance:,}** entries\n\n"
+            "**Roll distribution**\n"
+            f"1: {face_counts[1]} times\n"
+            f"2: {face_counts[2]} times\n"
+            f"3: {face_counts[3]} times\n"
+            f"4: {face_counts[4]} times\n"
+            f"5: {face_counts[5]} times\n"
+            f"6: {face_counts[6]} times"
+        )
+        embed = build_embed(
+            "dice",
+            "🎲 Dice Roll Results",
+            description,
+            [],
+            include_banner=False,
+        )
+        embed.set_footer(text="ZyraBot • Dice roll results")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class DicePanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Dice Roll",
+        style=discord.ButtonStyle.success,
+        emoji="🎲",
+        custom_id="dice_roll",
+    )
+    async def dice_roll(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DiceRollModal())
 
 
 class GiveawayEntryModal(discord.ui.Modal):
@@ -1784,6 +1899,7 @@ async def on_ready():
     bot.add_view(BankView())
     bot.add_view(InvitesPanelView())
     bot.add_view(SupportPanelView())
+    bot.add_view(DicePanelView())
     panels = await db_pool.fetch("SELECT key, channel_id FROM panels")
     for panel in panels:
         channel = bot.get_channel(panel["channel_id"])
@@ -1974,7 +2090,57 @@ async def rank(ctx: commands.Context):
         text="Paid daily at 21:00 CET if you send 50 valid messages."
     )
 
+    await send_command_banner(ctx.channel, "rank")
     await ctx.send(embed=embed)
+
+
+@bot.command()
+async def chance(ctx: commands.Context):
+    await send_command_banner(ctx.channel, "chance")
+    description = "\n".join(
+        [
+            "💎 +250 Entries → 0.0001%",
+            "🌟 +100 Entries → 0.001%",
+            "✨ +50 Entries → 0.0111%",
+            "⭐⭐⭐ +25 Entries → 0.111%",
+            "⭐⭐ +10 Entries → 0.25%",
+            "⭐ +8 Entries → 0.5%",
+            "⭐ +5 Entries → 1.0%",
+            "⭐ +4 Entries → 2.5%",
+            "⭐ +2 Entries → 5.0%",
+            "⭐ +1 Entry → 10.0%",
+        ]
+    )
+    embed = build_embed(
+        "chance",
+        "⭐ Entry Drop Chances",
+        description,
+        [],
+    )
+    embed.set_footer(text="ZyraBot • Entry drop chances")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def dice(ctx: commands.Context):
+    await send_command_banner(ctx.channel, "dice")
+    description = (
+        "🎲 Enter how many entries you want to roll.\n"
+        "🔻 Rolls 1-3: **-1** entry each\n"
+        "🔺 Rolls 4-6: **+2** entries each\n"
+        "📊 Results include a full face breakdown."
+    )
+    embed = build_embed(
+        "dice",
+        "🎲 Dice Roll Panel",
+        description,
+        [],
+        include_banner=False,
+    )
+    embed.set_footer(text="ZyraBot • Dice roll panel")
+    await ctx.send(embed=embed, view=DicePanelView())
+    await log_event("admin_command", ctx.author.id, "!dice")
 
 
 @bot.command()
