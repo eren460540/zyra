@@ -748,27 +748,19 @@ class GiveawayEntryModal(discord.ui.Modal):
                         ephemeral=True,
                     )
                     return
-                existing = await conn.fetchrow(
-                    "SELECT 1 FROM giveaway_entries WHERE giveaway_id=$1 AND user_id=$2",
-                    self.giveaway_id,
-                    user.id,
-                )
-                if existing:
-                    await interaction.response.send_message(
-                        f"{EMOJI['moonlight']} You already entered.",
-                        ephemeral=True,
-                    )
-                    await log_event("economy_abuse", user.id, "Duplicate giveaway entry attempt.")
-                    return
                 await conn.execute(
                     "UPDATE users SET entries=entries-$1 WHERE user_id=$2",
                     amount,
                     user.id,
                 )
-                await conn.execute(
+                entry_row = await conn.fetchrow(
                     """
                     INSERT INTO giveaway_entries (giveaway_id, user_id, entries_spent, entered_at)
                     VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (giveaway_id, user_id)
+                    DO UPDATE SET entries_spent=giveaway_entries.entries_spent + EXCLUDED.entries_spent,
+                                  entered_at=EXCLUDED.entered_at
+                    RETURNING entries_spent
                     """,
                     self.giveaway_id,
                     user.id,
@@ -778,8 +770,9 @@ class GiveawayEntryModal(discord.ui.Modal):
                 new_balance = balance - amount
         if isinstance(user, discord.Member):
             await update_user_roles(user, new_balance)
+        total_entries = entry_row["entries_spent"] if entry_row else amount
         await interaction.response.send_message(
-            f"{EMOJI['star']} Entry recorded! Good luck.",
+            f"{EMOJI['star']} Entry recorded! Total in giveaway: **{total_entries:,}**.",
             ephemeral=True,
         )
 
