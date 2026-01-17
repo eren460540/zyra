@@ -257,7 +257,7 @@ def build_embed(
         embed.set_image(url=BANNER_MAP[kind])
     for name, value, inline in fields:
         embed.add_field(name=name, value=value, inline=inline)
-    footer = "ZyraBot • Economy/Invites/Support/Giveaways"
+    footer = "Axolotl • Economy/Invites/Support/Giveaways"
     embed.set_footer(text=footer)
     return embed
 
@@ -747,7 +747,7 @@ class DiceRollModal(discord.ui.Modal):
                     if roll <= 3:
                         net_change -= 1
                     else:
-                        net_change += 2
+                        net_change += 1
                 new_balance = balance + net_change
                 await conn.execute(
                     "UPDATE users SET entries=$1 WHERE user_id=$2",
@@ -788,7 +788,7 @@ class DiceRollModal(discord.ui.Modal):
             [],
             include_banner=False,
         )
-        embed.set_footer(text="ZyraBot • Dice roll results")
+        embed.set_footer(text="Axolotl • Dice roll results")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -2116,8 +2116,9 @@ async def chance(ctx: commands.Context):
         "⭐ Entry Drop Chances",
         description,
         [],
+        include_banner=False,
     )
-    embed.set_footer(text="ZyraBot • Entry drop chances")
+    embed.set_footer(text="Axolotl • Entry drop chances")
     await ctx.send(embed=embed)
 
 
@@ -2128,7 +2129,7 @@ async def dice(ctx: commands.Context):
     description = (
         "🎲 Enter how many entries you want to roll.\n"
         "🔻 Rolls 1-3: **-1** entry each\n"
-        "🔺 Rolls 4-6: **+2** entries each\n"
+        "🔺 Rolls 4-6: **+1** entries each\n"
         "📊 Results include a full face breakdown."
     )
     embed = build_embed(
@@ -2138,7 +2139,7 @@ async def dice(ctx: commands.Context):
         [],
         include_banner=False,
     )
-    embed.set_footer(text="ZyraBot • Dice roll panel")
+    embed.set_footer(text="Axolotl • Dice roll panel")
     await ctx.send(embed=embed, view=DicePanelView())
     await log_event("admin_command", ctx.author.id, "!dice")
 
