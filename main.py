@@ -1671,6 +1671,8 @@ async def on_ready():
         max_size=5
     )
     print("✅ Database connected")
+    if bot.user and bot.user.name != "Axolotl":
+        await bot.user.edit(username="Axolotl")
     await run_migrations()
     await get_event_state()
     bot.add_view(BankView())
