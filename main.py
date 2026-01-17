@@ -708,6 +708,16 @@ class GiveawayEntryModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         user = interaction.user
+        giveaway_row = await db_pool.fetchrow(
+            "SELECT ended FROM giveaways WHERE id=$1",
+            self.giveaway_id,
+        )
+        if not giveaway_row or giveaway_row["ended"]:
+            await interaction.response.send_message(
+                f"{EMOJI['moonlight']} This giveaway has ended.",
+                ephemeral=True,
+            )
+            return
         try:
             amount = int(self.entries_amount.value.strip())
         except ValueError:
@@ -775,19 +785,27 @@ class GiveawayEntryModal(discord.ui.Modal):
 
 
 class GiveawayView(discord.ui.View):
-    def __init__(self, giveaway_id: int):
+    def __init__(self, giveaway_id: int, ended: bool = False):
         super().__init__(timeout=None)
         self.giveaway_id = giveaway_id
         button = discord.ui.Button(
-            label="Enter Giveaway",
-            style=discord.ButtonStyle.success,
+            label="Enter Giveaway" if not ended else "Giveaway Ended",
+            style=discord.ButtonStyle.success if not ended else discord.ButtonStyle.secondary,
             emoji=safe_button_emoji(EMOJI["star"], "👉"),
             custom_id=f"giveaway_enter_{giveaway_id}",
         )
+        button.disabled = ended
         button.callback = self.enter_giveaway
         self.add_item(button)
 
     async def enter_giveaway(self, interaction: discord.Interaction):
+        row = await db_pool.fetchrow("SELECT ended FROM giveaways WHERE id=$1", self.giveaway_id)
+        if not row or row["ended"]:
+            await interaction.response.send_message(
+                f"{EMOJI['moonlight']} This giveaway has ended.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_modal(GiveawayEntryModal(self.giveaway_id))
 
 
@@ -1440,6 +1458,19 @@ async def giveaway_ender():
         await asyncio.sleep(15)
 
 
+async def disable_giveaway_message(channel: discord.abc.Messageable, giveaway_id: int, message_id: Optional[int]):
+    if not message_id:
+        return
+    try:
+        message = await channel.fetch_message(message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return
+    try:
+        await message.edit(view=GiveawayView(giveaway_id, ended=True))
+    except discord.HTTPException:
+        return
+
+
 async def end_giveaway(row: asyncpg.Record):
     channel = bot.get_channel(row["channel_id"])
     if not channel:
@@ -1448,6 +1479,7 @@ async def end_giveaway(row: asyncpg.Record):
         except (discord.NotFound, discord.Forbidden):
             return
     giveaway_id = row["id"]
+    await disable_giveaway_message(channel, giveaway_id, row["message_id"])
     entries = await db_pool.fetch(
         "SELECT user_id, entries_spent FROM giveaway_entries WHERE giveaway_id=$1",
         giveaway_id,
