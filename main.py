@@ -227,25 +227,41 @@ def parse_duration(value: str) -> int:
     return seconds
 
 
-def build_embed(kind: str, title: str, description: str, fields: List[Tuple[str, str, bool]]) -> discord.Embed:
-    color_map = {
-        "bank": discord.Color.teal(),
-        "giveaway_normal": discord.Color.purple(),
-        "giveaway_big": discord.Color.gold(),
-        "invite": discord.Color.green(),
-        "support": discord.Color.blue(),
-        "logs": discord.Color.dark_red(),
-        "rng": discord.Color.gold(),
-        "rules": discord.Color.blue(),
-    }
-    embed = discord.Embed(title=title, description=description, color=color_map.get(kind, discord.Color.blurple()))
-    if kind in BANNER_MAP:
+COLOR_MAP = {
+    "bank": discord.Color.teal(),
+    "giveaway_normal": discord.Color.purple(),
+    "giveaway_big": discord.Color.gold(),
+    "invite": discord.Color.green(),
+    "support": discord.Color.blue(),
+    "logs": discord.Color.dark_red(),
+    "rng": discord.Color.gold(),
+    "rules": discord.Color.blue(),
+}
+
+
+def build_embed(
+    kind: str,
+    title: str,
+    description: str,
+    fields: List[Tuple[str, str, bool]],
+    include_banner: bool = True,
+) -> discord.Embed:
+    embed = discord.Embed(title=title, description=description, color=COLOR_MAP.get(kind, discord.Color.blurple()))
+    if include_banner and kind in BANNER_MAP:
         embed.set_image(url=BANNER_MAP[kind])
     for name, value, inline in fields:
         embed.add_field(name=name, value=value, inline=inline)
     footer = "ZyraBot • Economy/Invites/Support/Giveaways"
     embed.set_footer(text=footer)
     return embed
+
+
+async def send_command_banner(channel: discord.abc.Messageable, kind: str) -> None:
+    if kind not in BANNER_MAP:
+        return
+    embed = discord.Embed(color=COLOR_MAP.get(kind, discord.Color.blurple()))
+    embed.set_image(url=BANNER_MAP[kind])
+    await channel.send(embed=embed)
 
 
 async def run_migrations():
@@ -1254,7 +1270,7 @@ async def handle_invite_purchase(interaction: discord.Interaction, user_id: int,
     )
 
 
-async def create_bank_panel(channel: discord.TextChannel):
+async def create_bank_panel(channel: discord.TextChannel, include_banner: bool = True):
     description = f"Entries persist forever and can be used for giveaways and events. {EMOJI['moonlight']}"
     fields = [
         ("Uses", "Giveaways + events", True),
@@ -1264,22 +1280,28 @@ async def create_bank_panel(channel: discord.TextChannel):
         f"{EMOJI['star']} {EMOJI['heart']} Bank Panel",
         description,
         fields,
+        include_banner=include_banner,
     )
     await ensure_panel_message("bank_panel", channel.id, embed, BankView())
 
 
-async def create_support_panel(channel: discord.TextChannel):
+async def create_support_panel(channel: discord.TextChannel, include_banner: bool = True):
     description = "Trading is 100% Secured. If you have serious issues create a ticket."
     embed = build_embed(
         "support",
         f"{EMOJI['staff_hammer']} {EMOJI['moonlight']} Support Panel",
         description,
         [("Need help?", "Open a ticket below.", False)],
+        include_banner=include_banner,
     )
     await ensure_panel_message("support_panel", channel.id, embed, SupportPanelView())
 
 
-async def create_invites_panel(channel: discord.TextChannel, event_state: EventState):
+async def create_invites_panel(
+    channel: discord.TextChannel,
+    event_state: EventState,
+    include_banner: bool = True,
+):
     description = "Invite friends to earn entries rewards."
     fields = [
         (
@@ -1294,6 +1316,7 @@ async def create_invites_panel(channel: discord.TextChannel, event_state: EventS
         f"{EMOJI['star']} {EMOJI['moonlight']} Invites Panel",
         description,
         fields,
+        include_banner=include_banner,
     )
     message = await ensure_panel_message("invites_panel", channel.id, embed, InvitesPanelView())
     if message:
@@ -1846,17 +1869,17 @@ async def rules(ctx: commands.Context):
             False,
         ),
         (
-            f"2️⃣ No Spam or Flooding 🚫 {EMOJI['rage']} {EMOJI['meru_panic']}",
+            f"2️⃣ No Spam or Flooding 🚫 {EMOJI['meru_panic']}",
             "- No message spam, emoji spam, or farming activity.",
             False,
         ),
         (
-            f"3️⃣ Links & Advertising 🔗 {EMOJI['doom']} {EMOJI['meru_no_bully']}",
+            f"3️⃣ Links & Advertising 🔗 {EMOJI['meru_no_bully']}",
             "- No server ads, scam links, or self-promotion without staff approval.",
             False,
         ),
         (
-            f"4️⃣ Content Guidelines 🖼️ {EMOJI['light']} {EMOJI['meru_blur_shock']}",
+            f"4️⃣ Content Guidelines 🖼️ {EMOJI['meru_blur_shock']}",
             "- No NSFW, sexual, shocking, or disturbing content.",
             False,
         ),
@@ -1867,7 +1890,7 @@ async def rules(ctx: commands.Context):
             False,
         ),
         (
-            f"6️⃣ Giveaways 🎁 {EMOJI['rank_heart']} {EMOJI['meru_jump_hype']}",
+            f"6️⃣ Giveaways 🎁 {EMOJI['meru_jump_hype']}",
             "- Giveaways are weighted by entries.\n"
             "- Manipulation or abuse is forbidden.",
             False,
@@ -1885,19 +1908,21 @@ async def rules(ctx: commands.Context):
             False,
         ),
         (
-            f"9️⃣ Discord ToS 📜 {EMOJI['void']} {EMOJI['meru_sips_tea']}",
+            f"9️⃣ Discord ToS 📜 {EMOJI['meru_sips_tea']}",
             "- Discord Terms of Service must be followed at all times.",
             False,
         ),
     ]
+    await send_command_banner(ctx.channel, "rules")
     embed = build_embed(
         "rules",
         title,
         "Please read and follow these guidelines to keep the server safe and fun.",
         fields,
+        include_banner=False,
     )
     embed.set_footer(
-        text=f"⚠️ Rules may change at any time • Staff decisions are final • {EMOJI['meru_peace']}"
+        text="⚠️ Rules may change at any time • Staff decisions are final"
     )
     await ctx.send(embed=embed)
 
@@ -1930,14 +1955,16 @@ async def rank(ctx: commands.Context):
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def bank(ctx: commands.Context):
-    await create_bank_panel(ctx.channel)
+    await send_command_banner(ctx.channel, "bank")
+    await create_bank_panel(ctx.channel, include_banner=False)
     await log_event("admin_command", ctx.author.id, "!bank")
 
 
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
 async def support(ctx: commands.Context):
-    await create_support_panel(ctx.channel)
+    await send_command_banner(ctx.channel, "support")
+    await create_support_panel(ctx.channel, include_banner=False)
     await log_event("admin_command", ctx.author.id, "!support")
 
 
@@ -1949,7 +1976,8 @@ async def invites(ctx: commands.Context):
     if not channel:
         await ctx.send("Invites panel channel not found.")
         return
-    await create_invites_panel(channel, event_state)
+    await send_command_banner(channel, "invite")
+    await create_invites_panel(channel, event_state, include_banner=False)
     await log_event("admin_command", ctx.author.id, "!invites")
 
 
@@ -1974,6 +2002,7 @@ async def host(ctx: commands.Context, *args: str):
         await ctx.send(f"Invalid time format: {exc}")
         return
     end_timestamp = now_ts() + duration
+    await send_command_banner(ctx.channel, "giveaway_normal")
     embed = build_embed(
         "giveaway_normal",
         f"{EMOJI['heart']} {EMOJI['star']} Giveaway",
@@ -1983,6 +2012,7 @@ async def host(ctx: commands.Context, *args: str):
             ("Winners", str(winner_amount), True),
             ("Ends", f"<t:{end_timestamp}:R>", True),
         ],
+        include_banner=False,
     )
     embed.set_footer(text=f"Hosted by {ctx.author.display_name}")
     channel = ctx.channel
@@ -2029,6 +2059,7 @@ async def bighost(ctx: commands.Context, *args: str):
         await ctx.send(f"Invalid time format: {exc}")
         return
     end_timestamp = now_ts() + duration
+    await send_command_banner(ctx.channel, "giveaway_big")
     embed = build_embed(
         "giveaway_big",
         f"{EMOJI['star']} BIG Giveaway",
@@ -2038,6 +2069,7 @@ async def bighost(ctx: commands.Context, *args: str):
             ("Winners", str(winner_amount), True),
             ("Ends", f"<t:{end_timestamp}:R>", True),
         ],
+        include_banner=False,
     )
     embed.set_footer(text=f"Hosted by {ctx.author.display_name}")
     channel = ctx.channel
