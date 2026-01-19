@@ -98,7 +98,7 @@ BANNER_MAP = {
     "chance": "https://cdn.discordapp.com/attachments/1431610647921295450/1462095033825230878/Copy_of_Support_Axolotl_6.png",
     "dice": "https://cdn.discordapp.com/attachments/1431610647921295450/1462097366285946961/Copy_of_Support_Axolotl_7.png?ex=696cf3c8&is=696ba248&hm=5eeda0754ffb970dc14406a15eed9b0c79426d5cc9492e74ef8e208835b05e59&",
     "script": "https://cdn.discordapp.com/attachments/1431610647921295450/1462847804283293746/Copy_of_Support_Axolotl_8.png",
-    "boost": "https://cdn.discordapp.com/attachments/1431610647921295450/1462847804283293746/Copy_of_Support_Axolotl_8.png?ex=696faeae&is=696e5d2e&hm=b872d9234870595b9dc4c69e6692116205d726f0883dce7fe896fbd0a568c97f&",
+    "boost": "https://cdn.discordapp.com/attachments/1431610647921295450/1462857357221564506/Copy_of_Support_Axolotl_9.png?ex=696fb794&is=696e6614&hm=5a1ef9093906bc709ea30f117e1aa4aff01d8b588a1b67478693e5537b7a0e2a&",
 }
 
 RANKS = [
