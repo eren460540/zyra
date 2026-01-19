@@ -23,6 +23,7 @@ STAFF_LOG_CHANNEL_ID = 1440730206187950122
 REPORTS_CHANNEL_ID = 1462013250802552853
 INVITES_PANEL_CHANNEL_ID = 1442936279644897381
 STAFF_TICKET_ROLE_ID = 1431610644721041587
+BOOSTER_ROLE_ID = 1434272762276614255
 
 EMOJI = {
     "blur_shock": "<:meru_blur_shock:1461406604619419894>",
@@ -97,6 +98,7 @@ BANNER_MAP = {
     "chance": "https://cdn.discordapp.com/attachments/1431610647921295450/1462095033825230878/Copy_of_Support_Axolotl_6.png",
     "dice": "https://cdn.discordapp.com/attachments/1431610647921295450/1462097366285946961/Copy_of_Support_Axolotl_7.png?ex=696cf3c8&is=696ba248&hm=5eeda0754ffb970dc14406a15eed9b0c79426d5cc9492e74ef8e208835b05e59&",
     "script": "https://cdn.discordapp.com/attachments/1431610647921295450/1462847804283293746/Copy_of_Support_Axolotl_8.png",
+    "boost": "https://cdn.discordapp.com/attachments/1431610647921295450/1462847804283293746/Copy_of_Support_Axolotl_8.png?ex=696faeae&is=696e5d2e&hm=b872d9234870595b9dc4c69e6692116205d726f0883dce7fe896fbd0a568c97f&",
 }
 
 RANKS = [
@@ -150,6 +152,15 @@ def safe_modal_title(custom_emoji: str | None, fallback_unicode: str, text: str,
         return emoji[:max_length]
     trimmed_text = base_text[:available].rstrip()
     return f"{emoji} {trimmed_text}".strip()
+
+
+def has_booster_role(member: Optional[discord.Member]) -> bool:
+    if not member or not member.guild:
+        return False
+    role = member.guild.get_role(BOOSTER_ROLE_ID)
+    if not role:
+        return False
+    return role in member.roles
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -244,6 +255,7 @@ COLOR_MAP = {
     "chance": discord.Color.gold(),
     "dice": discord.Color.orange(),
     "script": discord.Color.blurple(),
+    "boost": discord.Color.purple(),
 }
 
 
@@ -750,6 +762,8 @@ class DiceRollModal(discord.ui.Modal):
                         net_change -= 1
                     else:
                         net_change += 1
+                if has_booster_role(user if isinstance(user, discord.Member) else None):
+                    net_change = max(0, net_change)
                 new_balance = balance + net_change
                 await conn.execute(
                     "UPDATE users SET entries=$1 WHERE user_id=$2",
@@ -1174,13 +1188,14 @@ class SupportPanelView(discord.ui.View):
         guild = interaction.guild
         if not guild:
             return
-        existing = await db_pool.fetchrow(
-            "SELECT channel_id FROM tickets WHERE opener_id=$1 AND open=true",
+        open_count = await db_pool.fetchval(
+            "SELECT COUNT(*) FROM tickets WHERE opener_id=$1 AND open=true",
             interaction.user.id,
         )
-        if existing:
+        limit = 2 if has_booster_role(interaction.user if isinstance(interaction.user, discord.Member) else None) else 1
+        if open_count >= limit:
             await interaction.response.send_message(
-                f"{EMOJI['moonlight']} You already have an open ticket.",
+                f"{EMOJI['moonlight']} You already have the maximum number of open tickets.",
                 ephemeral=True,
             )
             return
@@ -1246,13 +1261,14 @@ class ScriptPanelView(discord.ui.View):
         guild = interaction.guild
         if not guild:
             return
-        existing = await db_pool.fetchrow(
-            "SELECT channel_id FROM tickets WHERE opener_id=$1 AND open=true",
+        open_count = await db_pool.fetchval(
+            "SELECT COUNT(*) FROM tickets WHERE opener_id=$1 AND open=true",
             interaction.user.id,
         )
-        if existing:
+        limit = 2 if has_booster_role(interaction.user if isinstance(interaction.user, discord.Member) else None) else 1
+        if open_count >= limit:
             await interaction.response.send_message(
-                "You already have an open ticket.",
+                "You already have the maximum number of open tickets.",
                 ephemeral=True,
             )
             return
@@ -1280,6 +1296,8 @@ class ScriptPanelView(discord.ui.View):
             "3️⃣ Device (Android / iOS / Windows / Mac)\n\n"
             "A staff member will review your request."
         )
+        if has_booster_role(interaction.user if isinstance(interaction.user, discord.Member) else None):
+            message = f"{message}\n\n💎 BOOSTER PRIORITY"
         await channel.send(message, view=TicketCloseView(channel.id))
         await interaction.response.send_message(
             f"Ticket created: {channel.mention}",
@@ -1514,6 +1532,46 @@ async def create_script_panel(channel: discord.TextChannel, include_banner: bool
     await ensure_panel_message("script_panel", channel.id, embed, ScriptPanelView())
 
 
+async def create_boost_panel(channel: discord.TextChannel, include_banner: bool = True):
+    description = (
+        "🚀 Thank you for boosting the server!\n\n"
+        "Having the **Booster** role unlocks perks automatically.\n"
+        "**No claiming required** — perks apply as long as you have the role.\n\n"
+        "💎 To get perks: You must have the Booster role."
+    )
+    fields = [
+        (
+            "⭐ Economy Boosts",
+            "• **+0.25×** chat RNG entries\n"
+            "• **+15 entries daily** at **21:00 CET**\n"
+            "• Dice rolls can’t go negative",
+            False,
+        ),
+        ("🎁 Giveaway Advantages", "• **+10%** giveaway weight automatically", False),
+        (
+            "🎨 Custom Role Color",
+            "• Available for boosters (handled by staff / roles)\n"
+            "• (No bot action needed)",
+            False,
+        ),
+        ("🚀 Priority Access", "• Priority tickets\n• Faster script approval", False),
+        (
+            "🛡️ Quality-of-Life",
+            "• Up to **2** open tickets at once\n• Reduced spam penalties (entries only)",
+            False,
+        ),
+    ]
+    embed = build_embed(
+        "boost",
+        "💎 Booster Perks",
+        description,
+        fields,
+        include_banner=include_banner,
+    )
+    embed.set_footer(text="Axolotl • Automatic Booster Rewards")
+    await ensure_panel_message("boost_panel", channel.id, embed, discord.ui.View(timeout=None))
+
+
 async def create_invites_panel(
     channel: discord.TextChannel,
     event_state: EventState,
@@ -1567,46 +1625,65 @@ async def daily_role_payout():
             )
 
             for user in users:
-                if user["daily_messages"] < 50:
-                    continue
-
                 member = guild.get_member(user["user_id"])
                 if not member:
                     continue
+                balance = int(user["entries"])
+                reward_applied = False
+                if user["daily_messages"] < 50:
+                    pass
+                else:
+                    highest = None
+                    for rank in RANKS:
+                        if member.get_role(rank[2]):
+                            highest = rank
 
-                highest = None
-                for rank in RANKS:
-                    if member.get_role(rank[2]):
-                        highest = rank
+                    if highest:
+                        reward = highest[4]
+                        if reward > 0:
+                            balance += reward
+                            reward_applied = True
+                            await conn.execute(
+                                "UPDATE users SET entries = entries + $1 WHERE user_id=$2",
+                                reward,
+                                user["user_id"],
+                            )
+                            await log_event(
+                                "entries_gain",
+                                user["user_id"],
+                                json.dumps(
+                                    {
+                                        "source": "daily_role_reward",
+                                        "amount": reward,
+                                        "role": highest[1],
+                                        "new_balance": balance,
+                                    }
+                                ),
+                            )
 
-                if not highest:
-                    continue
+                if has_booster_role(member):
+                    booster_reward = 15
+                    balance += booster_reward
+                    reward_applied = True
+                    await conn.execute(
+                        "UPDATE users SET entries = entries + $1 WHERE user_id=$2",
+                        booster_reward,
+                        user["user_id"],
+                    )
+                    await log_event(
+                        "entries_gain",
+                        user["user_id"],
+                        json.dumps(
+                            {
+                                "source": "daily_booster_reward",
+                                "amount": booster_reward,
+                                "new_balance": balance,
+                            }
+                        ),
+                    )
 
-                reward = highest[4]
-                if reward <= 0:
-                    continue
-
-                new_balance = int(user["entries"]) + reward
-                await conn.execute(
-                    "UPDATE users SET entries = entries + $1 WHERE user_id=$2",
-                    reward,
-                    user["user_id"],
-                )
-
-                await log_event(
-                    "entries_gain",
-                    user["user_id"],
-                    json.dumps(
-                        {
-                            "source": "daily_role_reward",
-                            "amount": reward,
-                            "role": highest[1],
-                            "new_balance": new_balance,
-                        }
-                    ),
-                )
-
-                await update_user_roles(member, new_balance)
+                if reward_applied:
+                    await update_user_roles(member, balance)
 
             await conn.execute("UPDATE users SET daily_messages = 0")
 
@@ -1696,11 +1773,21 @@ async def end_giveaway(row: asyncpg.Record):
         await log_event("giveaway_no_participants", row["created_by"], f"Giveaway {giveaway_id} ended empty")
         return
     weights = []
+    guild = channel.guild if isinstance(channel, discord.abc.GuildChannel) else None
     for entry in entries:
-        weights.append((entry["user_id"], entry["entries_spent"]))
+        user_id = entry["user_id"]
+        spent = entry["entries_spent"]
+        member = guild.get_member(user_id) if guild else None
+        if not member and guild:
+            try:
+                member = await guild.fetch_member(user_id)
+            except (discord.NotFound, discord.Forbidden):
+                member = None
+        if has_booster_role(member):
+            spent = max(1, int(round(spent * 1.10)))
+        weights.append((user_id, spent))
     winners = pick_weighted_winners(weights, row["winner_count"])
     winner_lines = []
-    guild = channel.guild if isinstance(channel, discord.abc.GuildChannel) else None
     for user_id in winners:
         member = guild.get_member(user_id) if guild else None
         if not member and guild:
@@ -1805,6 +1892,9 @@ async def process_rng(message: discord.Message):
             user_id,
         )
         return
+    if award and has_booster_role(message.author if isinstance(message.author, discord.Member) else None):
+        boosted = int(round(award * 1.25))
+        award = max(1, boosted)
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await ensure_user(conn, user_id)
@@ -1935,8 +2025,9 @@ async def apply_automod(message: discord.Message) -> bool:
         consecutive_count = 1
     consecutive_message_tracker[message.channel.id] = (user_id, consecutive_count)
     entry_ban_reason = None
-    if consecutive_count >= 5:
-        entry_ban_reason = "5 messages in a row"
+    threshold = 7 if has_booster_role(message.author if isinstance(message.author, discord.Member) else None) else 5
+    if consecutive_count >= threshold:
+        entry_ban_reason = f"{threshold} messages in a row"
     if entry_ban_reason:
         already_active = state["no_entry_until"] > current
         no_entry_until = state["no_entry_until"] if already_active else current + 120
@@ -2003,6 +2094,8 @@ async def on_ready():
             await create_support_panel(channel)
         elif panel["key"] == "script_panel":
             await create_script_panel(channel)
+        elif panel["key"] == "boost_panel":
+            await create_boost_panel(channel)
         elif panel["key"] == "invites_panel":
             await refresh_invites_panel()
     rows = await db_pool.fetch("SELECT channel_id FROM tickets WHERE open=true")
@@ -2264,6 +2357,14 @@ async def script(ctx: commands.Context):
 
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
+async def boost(ctx: commands.Context):
+    await send_command_banner(ctx.channel, "boost")
+    await create_boost_panel(ctx.channel, include_banner=False)
+    await log_event("admin_command", ctx.author.id, "!boost")
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
 async def invites(ctx: commands.Context):
     event_state = await get_event_state()
     channel = bot.get_channel(INVITES_PANEL_CHANNEL_ID)
@@ -2429,6 +2530,14 @@ async def script_error(ctx: commands.Context, error: commands.CommandError):
         await ctx.send("You need the Manage Server permission to post the script panel.")
         return
     await ctx.send("Something went wrong while posting the script panel.")
+
+
+@boost.error
+async def boost_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You need the Manage Server permission to post the booster panel.")
+        return
+    await ctx.send("Something went wrong while posting the booster panel.")
 
 
 @invites.error
