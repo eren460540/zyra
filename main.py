@@ -96,6 +96,7 @@ BANNER_MAP = {
     "rank": "https://cdn.discordapp.com/attachments/1431610647921295450/1462091835483623627/Copy_of_Support_Axolotl_5.png?ex=696ceea1&is=696b9d21&hm=1635f96ee018aad324b9d8fee023830eb121a3fef6fc458497c23d768049b71e&",
     "chance": "https://cdn.discordapp.com/attachments/1431610647921295450/1462095033825230878/Copy_of_Support_Axolotl_6.png",
     "dice": "https://cdn.discordapp.com/attachments/1431610647921295450/1462097366285946961/Copy_of_Support_Axolotl_7.png?ex=696cf3c8&is=696ba248&hm=5eeda0754ffb970dc14406a15eed9b0c79426d5cc9492e74ef8e208835b05e59&",
+    "script": "https://cdn.discordapp.com/attachments/1431610647921295450/1462847804283293746/Copy_of_Support_Axolotl_8.png",
 }
 
 RANKS = [
@@ -242,6 +243,7 @@ COLOR_MAP = {
     "rank": discord.Color.gold(),
     "chance": discord.Color.gold(),
     "dice": discord.Color.orange(),
+    "script": discord.Color.blurple(),
 }
 
 
@@ -1230,6 +1232,62 @@ class SupportPanelView(discord.ui.View):
         await interaction.response.send_modal(ReportModal())
 
 
+class ScriptPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Get Script",
+        style=discord.ButtonStyle.primary,
+        emoji="🚀",
+        custom_id="script_get",
+    )
+    async def script_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            return
+        existing = await db_pool.fetchrow(
+            "SELECT channel_id FROM tickets WHERE opener_id=$1 AND open=true",
+            interaction.user.id,
+        )
+        if existing:
+            await interaction.response.send_message(
+                "You already have an open ticket.",
+                ephemeral=True,
+            )
+            return
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.get_role(STAFF_TICKET_ROLE_ID): discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        }
+        channel = await guild.create_text_channel(
+            name=f"script-{interaction.user.display_name}",
+            overwrites=overwrites,
+            reason="Script ticket created",
+        )
+        await db_pool.execute(
+            "INSERT INTO tickets (channel_id, opener_id, open, created_at) VALUES ($1, $2, true, $3)",
+            channel.id,
+            interaction.user.id,
+            now_ts(),
+        )
+        message = (
+            "📜 Script Request Ticket\n\n"
+            "Please send:\n"
+            "1️⃣ Screenshot proof you follow **eren460540** on TikTok\n"
+            "2️⃣ Game name\n"
+            "3️⃣ Device (Android / iOS / Windows / Mac)\n\n"
+            "A staff member will review your request."
+        )
+        await channel.send(message, view=TicketCloseView(channel.id))
+        await interaction.response.send_message(
+            f"Ticket created: {channel.mention}",
+            ephemeral=True,
+        )
+        await log_event("script_ticket_created", interaction.user.id, f"Script ticket channel {channel.id}")
+
+
 class ReportModal(discord.ui.Modal):
     def __init__(self):
         super().__init__(title="Report a User")
@@ -1421,6 +1479,39 @@ async def create_support_panel(channel: discord.TextChannel, include_banner: boo
         include_banner=include_banner,
     )
     await ensure_panel_message("support_panel", channel.id, embed, SupportPanelView())
+
+
+async def create_script_panel(channel: discord.TextChannel, include_banner: bool = True):
+    description = (
+        "🚀 Click **Get Script** to receive access via a private ticket.\n\n"
+        "To receive your script, you must:\n"
+        "• Send a **screenshot proof** that you follow **eren460540** on **TikTok**\n"
+        "• Tell us the **game name**\n"
+        "• Tell us your **device**"
+    )
+    fields = [
+        (
+            "🎮 Supported Games",
+            "Steal a Brainrot\nGrow a Garden\nPlants vs Brainrots\nPet Simulator 99\nBlox Fruits\nMany other games",
+            False,
+        ),
+        (
+            "📌 Possible Requirements",
+            "• Like TikToks\n• Join a Discord server\n• Watch an ad\n• Send a number of messages\n• Invite a number of users",
+            False,
+        ),
+        ("🖥️ Supported Devices", "Android\niOS\nWindows\nMac", False),
+        ("🛠️ Extra Help", "We can help you get an **executor** if you don’t have one.", False),
+    ]
+    embed = build_embed(
+        "script",
+        "📜 Script Panel",
+        description,
+        fields,
+        include_banner=include_banner,
+    )
+    embed.set_footer(text="Axolotl • Script Access Panel")
+    await ensure_panel_message("script_panel", channel.id, embed, ScriptPanelView())
 
 
 async def create_invites_panel(
@@ -1899,6 +1990,7 @@ async def on_ready():
     bot.add_view(BankView())
     bot.add_view(InvitesPanelView())
     bot.add_view(SupportPanelView())
+    bot.add_view(ScriptPanelView())
     bot.add_view(DicePanelView())
     panels = await db_pool.fetch("SELECT key, channel_id FROM panels")
     for panel in panels:
@@ -1909,6 +2001,8 @@ async def on_ready():
             await create_bank_panel(channel)
         elif panel["key"] == "support_panel":
             await create_support_panel(channel)
+        elif panel["key"] == "script_panel":
+            await create_script_panel(channel)
         elif panel["key"] == "invites_panel":
             await refresh_invites_panel()
     rows = await db_pool.fetch("SELECT channel_id FROM tickets WHERE open=true")
@@ -2162,6 +2256,14 @@ async def support(ctx: commands.Context):
 
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
+async def script(ctx: commands.Context):
+    await send_command_banner(ctx.channel, "script")
+    await create_script_panel(ctx.channel, include_banner=False)
+    await log_event("admin_command", ctx.author.id, "!script")
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
 async def invites(ctx: commands.Context):
     event_state = await get_event_state()
     channel = bot.get_channel(INVITES_PANEL_CHANNEL_ID)
@@ -2319,6 +2421,14 @@ async def support_error(ctx: commands.Context, error: commands.CommandError):
         await ctx.send("You need the Manage Server permission to post the support panel.")
         return
     await ctx.send("Something went wrong while posting the support panel.")
+
+
+@script.error
+async def script_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You need the Manage Server permission to post the script panel.")
+        return
+    await ctx.send("Something went wrong while posting the script panel.")
 
 
 @invites.error
