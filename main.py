@@ -762,8 +762,6 @@ class DiceRollModal(discord.ui.Modal):
                         net_change -= 1
                     else:
                         net_change += 1
-                if has_booster_role(user if isinstance(user, discord.Member) else None):
-                    net_change = max(0, net_change)
                 new_balance = balance + net_change
                 await conn.execute(
                     "UPDATE users SET entries=$1 WHERE user_id=$2",
@@ -1543,8 +1541,7 @@ async def create_boost_panel(channel: discord.TextChannel, include_banner: bool 
         (
             "⭐ Economy Boosts",
             "• **+0.25×** chat RNG entries\n"
-            "• **+15 entries daily** at **21:00 CET**\n"
-            "• Dice rolls can’t go negative",
+            "• **+15 entries daily** at **21:00 CET**",
             False,
         ),
         ("🎁 Giveaway Advantages", "• **+10%** giveaway weight automatically", False),
