@@ -284,6 +284,74 @@ async def send_command_banner(channel: discord.abc.Messageable, kind: str) -> No
     await channel.send(embed=embed)
 
 
+def chunk_lines(lines: list[str], max_chars: int = 3500) -> list[str]:
+    chunks = []
+    buf = ""
+    for line in lines:
+        if len(buf) + len(line) + 1 > max_chars:
+            if buf:
+                chunks.append(buf)
+            buf = line
+        else:
+            buf = f"{buf}\n{line}" if buf else line
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+async def build_giveaway_entrants_output(
+    interaction: discord.Interaction,
+    giveaway_id: int,
+) -> tuple[str, list[str]]:
+    giveaway = await db_pool.fetchrow(
+        "SELECT id, prize, is_big, ended FROM giveaways WHERE id=$1",
+        giveaway_id,
+    )
+    if not giveaway:
+        return ("👻 Giveaway not found.", [])
+
+    rows = await db_pool.fetch(
+        """
+        SELECT user_id, entries_spent
+        FROM giveaway_entries
+        WHERE giveaway_id=$1
+        ORDER BY entries_spent DESC
+        """,
+        giveaway_id,
+    )
+    if not rows:
+        return ("👻 No one has entered yet.", [])
+
+    total = sum(int(r["entries_spent"]) for r in rows)
+    total = max(1, total)
+
+    guild = interaction.guild
+    lines: list[str] = []
+    for r in rows:
+        uid = int(r["user_id"])
+        spent = int(r["entries_spent"])
+        pct = (spent / total) * 100.0
+
+        member = None
+        if guild:
+            member = guild.get_member(uid)
+            if not member:
+                try:
+                    member = await guild.fetch_member(uid)
+                except (discord.NotFound, discord.Forbidden):
+                    member = None
+
+        rank_emoji = await get_economy_emoji_for_member(member)
+        mention = f"<@{uid}>"
+        lines.append(
+            f"{rank_emoji} {mention} {rank_emoji} — **{spent:,}** entries • **{pct:.2f}%** to win"
+        )
+
+    header = f"👻 **Entrants** • Total entries: **{total:,}**"
+    chunks = chunk_lines(lines, max_chars=3500)
+    return (header, chunks)
+
+
 async def run_migrations():
     async with db_pool.acquire() as conn:
         invite_tables = {
@@ -910,15 +978,24 @@ class GiveawayView(discord.ui.View):
     def __init__(self, giveaway_id: int, ended: bool = False):
         super().__init__(timeout=None)
         self.giveaway_id = giveaway_id
-        button = discord.ui.Button(
+        enter_button = discord.ui.Button(
             label="Enter Giveaway" if not ended else "Giveaway Ended",
             style=discord.ButtonStyle.success if not ended else discord.ButtonStyle.secondary,
             emoji=safe_button_emoji(EMOJI["star"], "👉"),
             custom_id=f"giveaway_enter_{giveaway_id}",
         )
-        button.disabled = ended
-        button.callback = self.enter_giveaway
-        self.add_item(button)
+        enter_button.disabled = ended
+        enter_button.callback = self.enter_giveaway
+        self.add_item(enter_button)
+
+        view_button = discord.ui.Button(
+            label="View Entrants",
+            style=discord.ButtonStyle.secondary,
+            emoji="👻",
+            custom_id=f"giveaway_view_{giveaway_id}",
+        )
+        view_button.callback = self.view_entrants
+        self.add_item(view_button)
 
     async def enter_giveaway(self, interaction: discord.Interaction):
         row = await db_pool.fetchrow("SELECT ended FROM giveaways WHERE id=$1", self.giveaway_id)
@@ -929,6 +1006,56 @@ class GiveawayView(discord.ui.View):
             )
             return
         await interaction.response.send_modal(GiveawayEntryModal(self.giveaway_id))
+
+    async def view_entrants(self, interaction: discord.Interaction):
+        header, chunks = await build_giveaway_entrants_output(interaction, self.giveaway_id)
+        giveaway = await db_pool.fetchrow(
+            "SELECT prize, is_big FROM giveaways WHERE id=$1",
+            self.giveaway_id,
+        )
+        kind = "giveaway_big" if (giveaway and giveaway["is_big"]) else "giveaway_normal"
+
+        if not chunks:
+            embed = build_embed(
+                kind,
+                "👻 Giveaway Entrants",
+                header,
+                [],
+                include_banner=False,
+            )
+            await interaction.response.send_message(
+                embed=embed,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        first_embed = build_embed(
+            kind,
+            "👻 Giveaway Entrants",
+            f"{header}\n\n{chunks[0]}",
+            [],
+            include_banner=False,
+        )
+        await interaction.response.send_message(
+            embed=first_embed,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+        for chunk in chunks[1:]:
+            embed = build_embed(
+                kind,
+                "👻 Giveaway Entrants (cont.)",
+                chunk,
+                [],
+                include_banner=False,
+            )
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
 
 class InvitesPanelView(discord.ui.View):
