@@ -24,6 +24,10 @@ REPORTS_CHANNEL_ID = 1462013250802552853
 INVITES_PANEL_CHANNEL_ID = 1442936279644897381
 STAFF_TICKET_ROLE_ID = 1431610644721041587
 BOOSTER_ROLE_ID = 1434272762276614255
+FREE_GENERATOR_ROLE_ID = 1465784482001850553
+PREMIUM_ROLE_ID = int(os.getenv("PREMIUM_ROLE_ID", "0"))
+OP_ROLE_ID = int(os.getenv("OP_ROLE_ID", "0"))
+FREE_GENERATOR_STATUS_TEXT = "Best Acc Generator: .gg/YHkEKtRPSX"
 
 EMOJI = {
     "blur_shock": "<:meru_blur_shock:1461406604619419894>",
@@ -117,6 +121,7 @@ RANKS = [
 ]
 
 RNG_COOLDOWN = 0
+GENERATOR_COOLDOWN_SECONDS = 15
 
 timezone_berlin = ZoneInfo("Europe/Berlin")
 
@@ -162,9 +167,27 @@ def has_booster_role(member: Optional[discord.Member]) -> bool:
         return False
     return role in member.roles
 
+
+def has_role(member: Optional[discord.Member], role_id: int) -> bool:
+    if not member or not member.guild or not role_id:
+        return False
+    role = member.guild.get_role(role_id)
+    if not role:
+        return False
+    return role in member.roles
+
+
+def resolve_generator_tier(member: Optional[discord.Member]) -> str:
+    if has_role(member, OP_ROLE_ID):
+        return "op"
+    if has_role(member, PREMIUM_ROLE_ID):
+        return "premium"
+    return "free"
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -256,6 +279,12 @@ COLOR_MAP = {
     "dice": discord.Color.orange(),
     "script": discord.Color.blurple(),
     "boost": discord.Color.purple(),
+}
+
+GENERATOR_TIER_COLORS = {
+    "free": discord.Color.from_rgb(0, 0, 0),
+    "premium": discord.Color.red(),
+    "op": discord.Color.cyan(),
 }
 
 
@@ -502,6 +531,56 @@ async def run_migrations():
             );
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generator_stock (
+                id SERIAL PRIMARY KEY,
+                tier TEXT NOT NULL CHECK (tier IN ('free', 'premium', 'op')),
+                username TEXT NOT NULL,
+                password TEXT NOT NULL,
+                claimed BOOLEAN NOT NULL DEFAULT FALSE,
+                added_by BIGINT NOT NULL,
+                added_at BIGINT NOT NULL,
+                claimed_by BIGINT NULL,
+                claimed_at BIGINT NULL
+            );
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generator_cooldowns (
+                user_id BIGINT PRIMARY KEY,
+                last_gen BIGINT NOT NULL
+            );
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generator_stats (
+                tier TEXT PRIMARY KEY CHECK (tier IN ('free', 'premium', 'op')),
+                global_generations BIGINT NOT NULL DEFAULT 0
+            );
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE generator_stats
+            ADD COLUMN IF NOT EXISTS global_generations BIGINT NOT NULL DEFAULT 0;
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE generator_stats
+            DROP COLUMN IF EXISTS total_generations;
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO generator_stats (tier, global_generations)
+            VALUES ('free', 0), ('premium', 0), ('op', 0)
+            ON CONFLICT (tier) DO NOTHING;
+            """
+        )
 
 
 async def get_or_create_user(user_id: int) -> Dict[str, int]:
@@ -654,6 +733,34 @@ async def log_event(action: str, user_id: Optional[int], details: str):
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     except Exception:
         return
+
+
+def get_custom_status_text(member: discord.Member) -> Optional[str]:
+    if not member.activities:
+        return None
+    for activity in member.activities:
+        if isinstance(activity, discord.CustomActivity):
+            return activity.name
+    return None
+
+
+def should_have_free_generator_role(member: discord.Member) -> bool:
+    status_text = get_custom_status_text(member)
+    return status_text == FREE_GENERATOR_STATUS_TEXT
+
+
+async def sync_free_generator_role(member: discord.Member) -> None:
+    if member.bot:
+        return
+    role = member.guild.get_role(FREE_GENERATOR_ROLE_ID)
+    if not role:
+        return
+    qualifies = should_have_free_generator_role(member)
+    has_role_now = role in member.roles
+    if qualifies and not has_role_now:
+        await member.add_roles(role, reason="Free generator status match")
+    elif not qualifies and has_role_now:
+        await member.remove_roles(role, reason="Free generator status missing")
 
 
 async def get_event_state() -> EventState:
@@ -2231,6 +2338,8 @@ async def on_ready():
     guilds = bot.guilds
     if guilds:
         await update_invites_cache(guilds[0])
+        for member in guilds[0].members:
+            await sync_free_generator_role(member)
     if not background_tasks:
         background_tasks.append(asyncio.create_task(giveaway_ender()))
         background_tasks.append(asyncio.create_task(scheduled_tasks()))
@@ -2250,6 +2359,7 @@ async def on_invite_delete(invite: discord.Invite):
 @bot.event
 async def on_member_join(member: discord.Member):
     guild = member.guild
+    await sync_free_generator_role(member)
     try:
         invites = await guild.invites()
     except (discord.Forbidden, discord.HTTPException):
@@ -2309,6 +2419,193 @@ async def on_message(message: discord.Message):
         await process_rng(message)
         await increment_daily_message(message.author.id)
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_presence_update(before: discord.Member, after: discord.Member):
+    await sync_free_generator_role(after)
+
+
+async def restock_generator(ctx: commands.Context, tier: str):
+    content = ctx.message.content or ""
+    prefix = ctx.prefix or "!"
+    command_name = ctx.invoked_with or f"restock_{tier}"
+    command_token = f"{prefix}{command_name}"
+    remainder = content[len(command_token):].lstrip() if content.startswith(command_token) else content
+    lines = remainder.splitlines() if remainder else []
+    added = 0
+    skipped = 0
+    inserts = []
+    for line in lines:
+        entry = line.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
+            skipped += 1
+            continue
+        username, password = entry.split(":", 1)
+        if not username or not password:
+            skipped += 1
+            continue
+        inserts.append((tier, username, password, ctx.author.id, now_ts()))
+        added += 1
+    if inserts:
+        await db_pool.executemany(
+            """
+            INSERT INTO generator_stock (tier, username, password, added_by, added_at)
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            inserts,
+        )
+    embed = discord.Embed(
+        title="✅ Generator Restock Summary",
+        color=GENERATOR_TIER_COLORS.get(tier, discord.Color.blurple()),
+    )
+    embed.add_field(name="Tier", value=tier, inline=True)
+    embed.add_field(name="Added", value=str(added), inline=True)
+    embed.add_field(name="Skipped", value=str(skipped), inline=True)
+    await ctx.send(embed=embed)
+    await log_event("admin_command", ctx.author.id, f"!restock_{tier}")
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def restock_free(ctx: commands.Context, *_args: str):
+    await restock_generator(ctx, "free")
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def restock_premium(ctx: commands.Context, *_args: str):
+    await restock_generator(ctx, "premium")
+
+
+@bot.command()
+@commands.has_guild_permissions(manage_guild=True)
+async def restock_op(ctx: commands.Context, *_args: str):
+    await restock_generator(ctx, "op")
+
+
+@bot.command()
+async def gen(ctx: commands.Context):
+    member = ctx.author if isinstance(ctx.author, discord.Member) else None
+    if not member:
+        return
+    if not (
+        has_role(member, OP_ROLE_ID)
+        or has_role(member, PREMIUM_ROLE_ID)
+        or has_role(member, FREE_GENERATOR_ROLE_ID)
+    ):
+        await ctx.send(
+            "You need to set your custom status to:\n"
+            f"`{FREE_GENERATOR_STATUS_TEXT}`"
+        )
+        return
+    tier = resolve_generator_tier(member)
+    now = now_ts()
+    cooldown_row = await db_pool.fetchrow(
+        "SELECT last_gen FROM generator_cooldowns WHERE user_id=$1",
+        ctx.author.id,
+    )
+    if cooldown_row:
+        last_gen = int(cooldown_row["last_gen"])
+        remaining = GENERATOR_COOLDOWN_SECONDS - (now - last_gen)
+        if remaining > 0:
+            await ctx.send(f"⏳ Please wait {remaining}s before generating again.")
+            return
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                WITH picked AS (
+                    SELECT id, username, password
+                    FROM generator_stock
+                    WHERE tier=$1 AND claimed=FALSE
+                    ORDER BY id ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                UPDATE generator_stock
+                SET claimed=TRUE, claimed_by=$2, claimed_at=$3
+                FROM picked
+                WHERE generator_stock.id = picked.id
+                RETURNING picked.username, picked.password
+                """,
+                tier,
+                ctx.author.id,
+                now,
+            )
+            actual_tier = tier
+            if not row and tier == "premium":
+                row = await conn.fetchrow(
+                    """
+                    WITH picked AS (
+                        SELECT id, username, password
+                        FROM generator_stock
+                        WHERE tier=$1 AND claimed=FALSE
+                        ORDER BY id ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    UPDATE generator_stock
+                    SET claimed=TRUE, claimed_by=$2, claimed_at=$3
+                    FROM picked
+                    WHERE generator_stock.id = picked.id
+                    RETURNING picked.username, picked.password
+                    """,
+                    "free",
+                    ctx.author.id,
+                    now,
+                )
+                if row:
+                    actual_tier = "free"
+            if not row:
+                await ctx.send("⚠️ No accounts are available right now. Please try again later.")
+                return
+            await conn.execute(
+                """
+                INSERT INTO generator_cooldowns (user_id, last_gen)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET last_gen=EXCLUDED.last_gen
+                """,
+                ctx.author.id,
+                now,
+            )
+            await conn.execute(
+                "UPDATE generator_stats SET global_generations=global_generations+1 WHERE tier=$1",
+                actual_tier,
+            )
+
+    username = row["username"]
+    password = row["password"]
+    color = GENERATOR_TIER_COLORS.get(actual_tier, discord.Color.blurple())
+    success_embed = discord.Embed(
+        title="✅ Account Generated",
+        description="Your account is ready. See the next embed for credentials.",
+        color=color,
+    )
+    success_embed.set_footer(text=f"Tier: {actual_tier.capitalize()}")
+    credentials = (
+        f"Username:\n```{username}```\n\n"
+        f"Password:\n```{password}```\n\n"
+        f"Combo:\n```{username}:{password}```"
+    )
+    credentials_embed = discord.Embed(
+        title="🔐 Your Credentials",
+        description=credentials,
+        color=color,
+    )
+    credentials_embed.set_footer(text="Do not share these credentials publicly.")
+    try:
+        dm_message = await ctx.author.send(embed=success_embed)
+        await dm_message.reply(embed=credentials_embed)
+        try:
+            await ctx.message.delete()
+        except (discord.Forbidden, discord.NotFound):
+            pass
+    except discord.Forbidden:
+        await ctx.send("❌ I couldn't DM you. Please enable DMs and try again.")
 
 
 @bot.command()
