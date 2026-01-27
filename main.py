@@ -185,10 +185,9 @@ def resolve_generator_tier(member: Optional[discord.Member]) -> str:
     return "free"
 
 intents = discord.Intents.default()
+intents.members = False
+intents.presences = False
 intents.message_content = True
-intents.members = True
-intents.presences = True
-intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
