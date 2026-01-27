@@ -284,7 +284,7 @@ COLOR_MAP = {
 GENERATOR_TIER_COLORS = {
     "free": discord.Color.from_rgb(0, 0, 0),
     "premium": discord.Color.red(),
-    "op": discord.Color.cyan(),
+    "op": discord.Color.teal(),
 }
 
 
