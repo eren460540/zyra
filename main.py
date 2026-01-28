@@ -2578,22 +2578,37 @@ async def gen(ctx: commands.Context):
     username = row["username"]
     password = row["password"]
     color = GENERATOR_TIER_COLORS.get(actual_tier, discord.Color.blurple())
-    success_embed = discord.Embed(
-        title=f"✅ 🔐 Account Generated",
+    dm_embed = discord.Embed(
+        title="🔐 Your Generated Account",
+        description="Here are your account details. Keep them safe and private.",
         color=color,
     )
-    success_embed.add_field(name="👤 Username", value=f"```{username}```", inline=False)
-    success_embed.add_field(name="🔑 Password", value=f"```{password}```", inline=False)
-    success_embed.add_field(name="🧩 Combo", value=f"```{username}:{password}```", inline=False)
-    success_embed.add_field(name="⭐ Tier", value=actual_tier.capitalize(), inline=True)
-    success_embed.set_footer(text=f"⚠️ Do not share these credentials • Tier: {actual_tier.capitalize()}")
+    dm_embed.add_field(name="👤 Username", value=f"```{username}```", inline=False)
+    dm_embed.add_field(name="🔑 Password", value=f"```{password}```", inline=False)
+    dm_embed.add_field(name="🧩 Combo", value=f"```{username}:{password}```", inline=False)
+    dm_embed.add_field(name="⭐ Tier", value=actual_tier.capitalize(), inline=True)
+    dm_embed.add_field(name="🛡️ Safety Tip", value="Never share your credentials with anyone.", inline=True)
+    dm_embed.set_footer(text=f"Axolotl Generator • Tier: {actual_tier.capitalize()}")
+    public_embed = discord.Embed(
+        title="📬 Account Sent!",
+        description=(
+            f"{EMOJI['sparkle_eyes']} Your account information has been sent to your DMs. "
+            f"{EMOJI['heart']} Please check your inbox!"
+        ),
+        color=color,
+    )
+    public_embed.set_footer(text="If you didn't receive a DM, make sure your DMs are open.")
     try:
-        await ctx.send(embed=success_embed)
+        await ctx.author.send(embed=dm_embed)
+        await ctx.send(embed=public_embed)
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.NotFound):
             pass
     except discord.Forbidden:
+        await ctx.send(
+            "⚠️ I couldn't DM you. Please enable DMs and try again."
+        )
         return
 
 
