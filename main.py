@@ -185,8 +185,8 @@ def resolve_generator_tier(member: Optional[discord.Member]) -> str:
     return "free"
 
 intents = discord.Intents.default()
-intents.members = False
-intents.presences = False
+intents.members = True
+intents.presences = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -2422,23 +2422,22 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_presence_update(before: discord.Member, after: discord.Member):
+    if after.bot:
+        return
+    if after.status == discord.Status.offline:
+        role = after.guild.get_role(FREE_GENERATOR_ROLE_ID)
+        if role and role in after.roles:
+            await after.remove_roles(role, reason="Free generator role removed on offline status")
+        return
     await sync_free_generator_role(after)
 
 
-async def restock_generator(ctx: commands.Context, tier: str):
-    content = ctx.message.content or ""
-    prefix = ctx.prefix or "!"
-    command_name = ctx.invoked_with or f"restock_{tier}"
-    command_token = f"{prefix}{command_name}"
-    remainder = content[len(command_token):].lstrip() if content.startswith(command_token) else content
-    lines = remainder.splitlines() if remainder else []
+async def restock_generator(ctx: commands.Context, tier: str, accounts: str):
+    tokens = accounts.split() if accounts else []
     added = 0
     skipped = 0
     inserts = []
-    for line in lines:
-        entry = line.strip()
-        if not entry:
-            continue
+    for entry in tokens:
         if ":" not in entry:
             skipped += 1
             continue
@@ -2460,7 +2459,7 @@ async def restock_generator(ctx: commands.Context, tier: str):
         title="✅ Generator Restock Summary",
         color=GENERATOR_TIER_COLORS.get(tier, discord.Color.blurple()),
     )
-    embed.add_field(name="Tier", value=tier, inline=True)
+    embed.add_field(name="Service", value=tier, inline=True)
     embed.add_field(name="Added", value=str(added), inline=True)
     embed.add_field(name="Skipped", value=str(skipped), inline=True)
     await ctx.send(embed=embed)
@@ -2469,20 +2468,20 @@ async def restock_generator(ctx: commands.Context, tier: str):
 
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def restock_free(ctx: commands.Context, *_args: str):
-    await restock_generator(ctx, "free")
+async def restock_free(ctx: commands.Context, *, accounts: str):
+    await restock_generator(ctx, "free", accounts)
 
 
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def restock_premium(ctx: commands.Context, *_args: str):
-    await restock_generator(ctx, "premium")
+async def restock_premium(ctx: commands.Context, *, accounts: str):
+    await restock_generator(ctx, "premium", accounts)
 
 
 @bot.command()
 @commands.has_guild_permissions(manage_guild=True)
-async def restock_op(ctx: commands.Context, *_args: str):
-    await restock_generator(ctx, "op")
+async def restock_op(ctx: commands.Context, *, accounts: str):
+    await restock_generator(ctx, "op", accounts)
 
 
 @bot.command()
@@ -2580,31 +2579,22 @@ async def gen(ctx: commands.Context):
     password = row["password"]
     color = GENERATOR_TIER_COLORS.get(actual_tier, discord.Color.blurple())
     success_embed = discord.Embed(
-        title="✅ Account Generated",
-        description="Your account is ready. See the next embed for credentials.",
+        title=f"✅ 🔐 Account Generated",
         color=color,
     )
-    success_embed.set_footer(text=f"Tier: {actual_tier.capitalize()}")
-    credentials = (
-        f"Username:\n```{username}```\n\n"
-        f"Password:\n```{password}```\n\n"
-        f"Combo:\n```{username}:{password}```"
-    )
-    credentials_embed = discord.Embed(
-        title="🔐 Your Credentials",
-        description=credentials,
-        color=color,
-    )
-    credentials_embed.set_footer(text="Do not share these credentials publicly.")
+    success_embed.add_field(name="👤 Username", value=f"```{username}```", inline=False)
+    success_embed.add_field(name="🔑 Password", value=f"```{password}```", inline=False)
+    success_embed.add_field(name="🧩 Combo", value=f"```{username}:{password}```", inline=False)
+    success_embed.add_field(name="⭐ Tier", value=actual_tier.capitalize(), inline=True)
+    success_embed.set_footer(text=f"⚠️ Do not share these credentials • Tier: {actual_tier.capitalize()}")
     try:
-        dm_message = await ctx.author.send(embed=success_embed)
-        await dm_message.reply(embed=credentials_embed)
+        await ctx.send(embed=success_embed)
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.NotFound):
             pass
     except discord.Forbidden:
-        await ctx.send("❌ I couldn't DM you. Please enable DMs and try again.")
+        return
 
 
 @bot.command()
