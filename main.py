@@ -2484,22 +2484,13 @@ async def restock_op(ctx: commands.Context, *, accounts: str):
     await restock_generator(ctx, "op", accounts)
 
 
-@bot.command()
-async def gen(ctx: commands.Context):
+async def handle_gen(ctx: commands.Context, tier: str, required_role_id: int):
     member = ctx.author if isinstance(ctx.author, discord.Member) else None
     if not member:
         return
-    if not (
-        has_role(member, OP_ROLE_ID)
-        or has_role(member, PREMIUM_ROLE_ID)
-        or has_role(member, FREE_GENERATOR_ROLE_ID)
-    ):
-        await ctx.send(
-            "You need to set your custom status to:\n"
-            f"`{FREE_GENERATOR_STATUS_TEXT}`"
-        )
+    if not has_role(member, required_role_id):
+        await ctx.send("❌ Access missing.")
         return
-    tier = resolve_generator_tier(member)
     now = now_ts()
     cooldown_row = await db_pool.fetchrow(
         "SELECT last_gen FROM generator_cooldowns WHERE user_id=$1",
@@ -2590,10 +2581,11 @@ async def gen(ctx: commands.Context):
     dm_embed.add_field(name="🛡️ Safety Tip", value="Never share your credentials with anyone.", inline=True)
     dm_embed.set_footer(text=f"Axolotl Generator • Tier: {actual_tier.capitalize()}")
     public_embed = discord.Embed(
-        title="📬 Account Sent!",
+        title=f"📬 Account Sent! {EMOJI['sparkle_eyes']} {EMOJI['meru_clap']}",
         description=(
             f"{EMOJI['sparkle_eyes']} Your account information has been sent to your DMs. "
-            f"{EMOJI['heart']} Please check your inbox!"
+            f"{EMOJI['heart']} {EMOJI['meru_jump_hype']} Please check your inbox! "
+            f"{EMOJI['meru_happy_pat']}"
         ),
         color=color,
     )
@@ -2601,15 +2593,26 @@ async def gen(ctx: commands.Context):
     try:
         await ctx.author.send(embed=dm_embed)
         await ctx.send(embed=public_embed)
-        try:
-            await ctx.message.delete()
-        except (discord.Forbidden, discord.NotFound):
-            pass
     except discord.Forbidden:
         await ctx.send(
             "⚠️ I couldn't DM you. Please enable DMs and try again."
         )
         return
+
+
+@bot.command()
+async def gen_free(ctx: commands.Context):
+    await handle_gen(ctx, "free", FREE_GENERATOR_ROLE_ID)
+
+
+@bot.command()
+async def gen_premium(ctx: commands.Context):
+    await handle_gen(ctx, "premium", PREMIUM_ROLE_ID)
+
+
+@bot.command()
+async def gen_op(ctx: commands.Context):
+    await handle_gen(ctx, "op", OP_ROLE_ID)
 
 
 @bot.command()
